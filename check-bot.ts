@@ -10,7 +10,7 @@ async function main() {
   const client = new PokedRaceMCPClient();
   await client.connect(SERVER_URL, API_KEY);
   
-  const result = await client.callTool("garage_get_robot_details", { token_index: 1003 });
+  const result = await client.callTool("garage_get_robot_details", { token_index: 3674 });
   console.log(result.content[0].text);
   
   await client.close();

@@ -31,24 +31,21 @@ async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Pro
 
     const text = result.content[0].text;
 
-    // Extract battery percentage
-    const batteryMatch = text.match(/🔋 Battery: (\d+)%/);
-    const battery = batteryMatch ? parseInt(batteryMatch[1]) : 100;
+    // Parse JSON response
+    const data = JSON.parse(text);
 
-    // Extract condition percentage
-    const conditionMatch = text.match(/🔧 Condition: (\d+)%/);
-    const condition = conditionMatch ? parseInt(conditionMatch[1]) : 100;
+    // Extract battery and condition from JSON
+    const battery = data.condition?.battery || 0;
+    const condition = data.condition?.condition || 0;
 
-    // Extract scavenging status
+    // Extract scavenging status from JSON
     let scavenging_zone: string | null = null;
-    const scavengingMatch = text.match(/🔍 SCAVENGING: Active.*in (ScrapHeaps|AbandonedSettlements|DeadMachineFields|RepairBay|ChargingStation)/);
-    if (scavengingMatch) {
-      scavenging_zone = scavengingMatch[1];
+    if (data.active_scavenging && data.active_scavenging.status !== "None") {
+      scavenging_zone = data.active_scavenging.zone || null;
     }
 
     // Extract name if exists
-    const nameMatch = text.match(/PokedBot #\d+ "([^"]+)"/);
-    const name = nameMatch ? nameMatch[1] : undefined;
+    const name = data.name || undefined;
 
     return {
       token_index: tokenIndex,
@@ -136,12 +133,12 @@ async function main() {
                   if (status.condition < CONDITION_THRESHOLD_HIGH) {
                     console.log(`  → Battery 100%! But condition low (${status.condition}%). Moving to RepairBay...`);
                     await executeAction(client, tokenIndex, "complete");
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     await executeAction(client, tokenIndex, "start", "RepairBay");
                   } else {
                     console.log(`  → Battery 100% and condition ${status.condition}%! Moving to ScrapHeaps...`);
                     await executeAction(client, tokenIndex, "complete");
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     await executeAction(client, tokenIndex, "start", "ScrapHeaps");
                   }
                 } else {
@@ -152,19 +149,19 @@ async function main() {
                 if (status.battery < BATTERY_THRESHOLD) {
                   console.log(`  → Battery critical (${status.battery}%) during repair! Moving to ChargingStation...`);
                   await executeAction(client, tokenIndex, "complete");
-                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  await new Promise(resolve => setTimeout(resolve, 300));
                   await executeAction(client, tokenIndex, "start", "ChargingStation");
                 } else if (status.condition >= CONDITION_THRESHOLD_HIGH) {
                   // 修理完了したがバッテリーチェック
                   if (status.battery < 100) {
                     console.log(`  → Condition restored (${status.condition}%), but battery not full (${status.battery}%). Moving to ChargingStation...`);
                     await executeAction(client, tokenIndex, "complete");
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     await executeAction(client, tokenIndex, "start", "ChargingStation");
                   } else {
                     console.log(`  → Condition restored and battery 100%! Moving to ScrapHeaps...`);
                     await executeAction(client, tokenIndex, "complete");
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     await executeAction(client, tokenIndex, "start", "ScrapHeaps");
                   }
                 } else {
@@ -178,7 +175,7 @@ async function main() {
                     : `Condition low (${status.condition}%)`;
                   console.log(`  → ${reason}! Moving to ChargingStation...`);
                   await executeAction(client, tokenIndex, "complete");
-                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  await new Promise(resolve => setTimeout(resolve, 300));
                   await executeAction(client, tokenIndex, "start", "ChargingStation");
                 } else {
                   console.log(`  → Scavenging... (Battery: ${status.battery}%, Condition: ${status.condition}%)`);
@@ -215,7 +212,7 @@ async function main() {
 
         // Small delay between chunks
         if (i < chunks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
 
@@ -224,7 +221,7 @@ async function main() {
       if (remainingBots.length > 0) {
         retryCount++;
         console.log(`\n⚠️  ${remainingBots.length} bots failed, will retry...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 

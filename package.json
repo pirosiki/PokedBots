@@ -11,7 +11,9 @@
     "list": "tsx src/list-bots.ts",
     "assign": "tsx src/assign-bot.ts",
     "auto-assign": "tsx src/auto-assign.ts",
-    "auto-scavenge": "tsx src/auto-scavenge-loop.ts"
+    "auto-scavenge": "tsx src/auto-scavenge-loop.ts",
+    "auto-racing": "tsx src/auto-racing-loop.ts",
+    "repair-racing": "tsx repair-racing-bots.ts"
   },
   "keywords": [
     "mcp",

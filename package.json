@@ -1,0 +1,33 @@
+{
+  "name": "pokedbots",
+  "version": "1.0.0",
+  "description": "AI-powered bot for PokedRace game using MCP server",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "list": "tsx src/list-bots.ts",
+    "assign": "tsx src/assign-bot.ts",
+    "auto-assign": "tsx src/auto-assign.ts",
+    "auto-scavenge": "tsx src/auto-scavenge-loop.ts"
+  },
+  "keywords": [
+    "mcp",
+    "pokedrace",
+    "bot",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "dotenv": "^17.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

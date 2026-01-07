@@ -1,0 +1,37 @@
+name: Auto Group Assignment
+
+on:
+  schedule:
+    # Run 4 times daily at 3:10, 9:10, 15:10, 21:10 UTC
+    - cron: '10 3,9,15,21 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  auto-group-assignment:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run group assignment
+        env:
+          MCP_SERVER_URL: https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp
+          MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+        run: npm run auto-group-assignment
+
+      - name: Commit updated bot configuration
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add bots-config.json
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update bot group assignment [skip ci]" && git push)

@@ -7,8 +7,9 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-const BATTERY_THRESHOLD = 30;
-const CONDITION_THRESHOLD = 30;
+const BATTERY_THRESHOLD = 40;
+const CONDITION_THRESHOLD_HIGH = 90; // ScrapHeapsに入る条件
+const CONDITION_THRESHOLD_LOW = 40;  // ScrapHeapsから出る条件
 
 interface BotStatus {
   token_index: number;
@@ -21,6 +22,13 @@ interface BotStatus {
 async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Promise<BotStatus | null> {
   try {
     const result = await client.callTool("garage_get_robot_details", { token_index: tokenIndex });
+
+    // Check for empty or malformed responses
+    if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+      console.warn(`  ⚠️  Empty response for bot #${tokenIndex}, skipping...`);
+      return null;
+    }
+
     const text = result.content[0].text;
 
     // Extract battery percentage
@@ -69,54 +77,13 @@ async function executeAction(client: PokedRaceMCPClient, tokenIndex: number, act
   }
 }
 
-async function manageBotScavenging(client: PokedRaceMCPClient, tokenIndex: number): Promise<void> {
-  const status = await getBotStatus(client, tokenIndex);
-  if (!status) {
-    return;
+// Helper function to split array into chunks
+function chunkArray<T>(array: T[], chunkSize: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < array.length; i += chunkSize) {
+    chunks.push(array.slice(i, i + chunkSize));
   }
-
-  const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
-  console.log(`\n🤖 Bot ${displayName}: Battery=${status.battery}%, Condition=${status.condition}%, Zone=${status.scavenging_zone || "None"}`);
-
-  // Decision logic
-  if (status.scavenging_zone) {
-    // Bot is currently scavenging
-    if (status.scavenging_zone === "RepairBay") {
-      // In RepairBay - check if condition is restored
-      if (status.condition >= 100) {
-        console.log(`  → Condition restored! Moving to ChargingStation...`);
-        await executeAction(client, tokenIndex, "complete");
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-        await executeAction(client, tokenIndex, "start", "ChargingStation");
-      } else {
-        console.log(`  → Still repairing... (${status.condition}%)`);
-      }
-    } else if (status.scavenging_zone === "ChargingStation") {
-      // In ChargingStation - check if battery is restored
-      if (status.battery >= 100) {
-        console.log(`  → Battery full! Moving to ScrapHeaps...`);
-        await executeAction(client, tokenIndex, "complete");
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-        await executeAction(client, tokenIndex, "start", "ScrapHeaps");
-      } else {
-        console.log(`  → Still charging... (${status.battery}%)`);
-      }
-    } else {
-      // In active scavenging zone (ScrapHeaps, etc.)
-      if (status.battery <= BATTERY_THRESHOLD || status.condition <= CONDITION_THRESHOLD) {
-        console.log(`  → Low resources! Moving to RepairBay...`);
-        await executeAction(client, tokenIndex, "complete");
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
-        await executeAction(client, tokenIndex, "start", "RepairBay");
-      } else {
-        console.log(`  → Scavenging in progress...`);
-      }
-    }
-  } else {
-    // Bot is not scavenging - start in ScrapHeaps
-    console.log(`  → Not scavenging. Starting in ScrapHeaps...`);
-    await executeAction(client, tokenIndex, "start", "ScrapHeaps");
-  }
+  return chunks;
 }
 
 async function main() {
@@ -128,19 +95,145 @@ async function main() {
     await client.connect(SERVER_URL, API_KEY);
 
     const scavengingBots = botManager.getScavengingBots();
-    console.log(`\n🔍 Auto-Scavenge Loop Started`);
+    console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
     console.log(`🤖 Managing ${scavengingBots.length} scavenging bots\n`);
-    console.log(`⚙️  Thresholds: Battery ≤ ${BATTERY_THRESHOLD}%, Condition ≤ ${CONDITION_THRESHOLD}%\n`);
+    console.log(`⚙️  Thresholds: Battery < ${BATTERY_THRESHOLD}%, Condition < ${CONDITION_THRESHOLD_LOW}% (ScrapHeaps exit) / >= ${CONDITION_THRESHOLD_HIGH}% (ScrapHeaps entry)`);
+    console.log(`⚡ Processing 2 bots at a time\n`);
 
-    // Process bots one by one to avoid rate limiting
-    for (const tokenIndex of scavengingBots) {
-      await manageBotScavenging(client, tokenIndex);
-      // Small delay between bots to be nice to the server
-      await new Promise(resolve => setTimeout(resolve, 500));
+    // Process bots in parallel (2 at a time)
+    let remainingBots = [...scavengingBots];
+    let processedCount = 0;
+    let retryCount = 0;
+    const maxRetries = 5;
+
+    while (remainingBots.length > 0 && retryCount < maxRetries) {
+      const chunks = chunkArray(remainingBots, 2);
+      const failedBots: number[] = [];
+
+      console.log(`\n🔄 ${retryCount > 0 ? `Retry ${retryCount}: ` : ''}Processing ${remainingBots.length} bots in ${chunks.length} chunks...`);
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(`\n📦 Processing chunk ${i + 1}/${chunks.length} (${chunk.length} bots)...`);
+
+        // Process all bots in this chunk in parallel
+        const results = await Promise.all(
+          chunk.map(async (tokenIndex) => {
+            const status = await getBotStatus(client, tokenIndex);
+            if (status === null) {
+              return { tokenIndex, success: false };
+            }
+
+            const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
+            console.log(`\n🤖 Bot ${displayName}: Battery=${status.battery}%, Condition=${status.condition}%, Zone=${status.scavenging_zone || "None"}`);
+
+            // Decision logic - Battery 100% required for ScrapHeaps
+            if (status.scavenging_zone) {
+              if (status.scavenging_zone === "ChargingStation") {
+                // ChargingStation: 100%になるまで絶対に外に出さない
+                if (status.battery >= 100) {
+                  if (status.condition < CONDITION_THRESHOLD_HIGH) {
+                    console.log(`  → Battery 100%! But condition low (${status.condition}%). Moving to RepairBay...`);
+                    await executeAction(client, tokenIndex, "complete");
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await executeAction(client, tokenIndex, "start", "RepairBay");
+                  } else {
+                    console.log(`  → Battery 100% and condition ${status.condition}%! Moving to ScrapHeaps...`);
+                    await executeAction(client, tokenIndex, "complete");
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await executeAction(client, tokenIndex, "start", "ScrapHeaps");
+                  }
+                } else {
+                  console.log(`  → Charging... (${status.battery}%)`);
+                }
+              } else if (status.scavenging_zone === "RepairBay") {
+                // RepairBay: バッテリー優先でチェック
+                if (status.battery < BATTERY_THRESHOLD) {
+                  console.log(`  → Battery critical (${status.battery}%) during repair! Moving to ChargingStation...`);
+                  await executeAction(client, tokenIndex, "complete");
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  await executeAction(client, tokenIndex, "start", "ChargingStation");
+                } else if (status.condition >= CONDITION_THRESHOLD_HIGH) {
+                  // 修理完了したがバッテリーチェック
+                  if (status.battery < 100) {
+                    console.log(`  → Condition restored (${status.condition}%), but battery not full (${status.battery}%). Moving to ChargingStation...`);
+                    await executeAction(client, tokenIndex, "complete");
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await executeAction(client, tokenIndex, "start", "ChargingStation");
+                  } else {
+                    console.log(`  → Condition restored and battery 100%! Moving to ScrapHeaps...`);
+                    await executeAction(client, tokenIndex, "complete");
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    await executeAction(client, tokenIndex, "start", "ScrapHeaps");
+                  }
+                } else {
+                  console.log(`  → Repairing... (Condition: ${status.condition}%, Battery: ${status.battery}%)`);
+                }
+              } else {
+                // ScrapHeaps等: どちらかが30%切ったらChargingStationへ
+                if (status.battery < BATTERY_THRESHOLD || status.condition < CONDITION_THRESHOLD_LOW) {
+                  const reason = status.battery < BATTERY_THRESHOLD
+                    ? `Battery low (${status.battery}%)`
+                    : `Condition low (${status.condition}%)`;
+                  console.log(`  → ${reason}! Moving to ChargingStation...`);
+                  await executeAction(client, tokenIndex, "complete");
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  await executeAction(client, tokenIndex, "start", "ChargingStation");
+                } else {
+                  console.log(`  → Scavenging... (Battery: ${status.battery}%, Condition: ${status.condition}%)`);
+                }
+              }
+            } else {
+              // 未稼働: Battery 100% & Condition 90%+ でないとScrapHeapsに行かない
+              if (status.battery < 100) {
+                console.log(`  → Not scavenging. Battery not full (${status.battery}%). Starting in ChargingStation...`);
+                await executeAction(client, tokenIndex, "start", "ChargingStation");
+              } else if (status.condition < CONDITION_THRESHOLD_HIGH) {
+                console.log(`  → Not scavenging. Battery 100% but condition low (${status.condition}%). Starting in RepairBay...`);
+                await executeAction(client, tokenIndex, "start", "RepairBay");
+              } else {
+                console.log(`  → Not scavenging. Battery 100% and condition ${status.condition}%! Starting in ScrapHeaps...`);
+                await executeAction(client, tokenIndex, "start", "ScrapHeaps");
+              }
+            }
+
+            return { tokenIndex, success: true };
+          })
+        );
+
+        // Track failed bots
+        for (const result of results) {
+          if (result.success) {
+            processedCount++;
+          } else {
+            failedBots.push(result.tokenIndex);
+          }
+        }
+
+        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${scavengingBots.length} total, ${failedBots.length} failed)`);
+
+        // Small delay between chunks
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      // Update remaining bots for retry
+      remainingBots = failedBots;
+      if (remainingBots.length > 0) {
+        retryCount++;
+        console.log(`\n⚠️  ${remainingBots.length} bots failed, will retry...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     }
 
-    console.log(`\n✅ Loop completed successfully`);
+    if (remainingBots.length > 0) {
+      console.log(`\n⚠️  Warning: ${remainingBots.length} bots could not be processed after ${maxRetries} retries`);
+      console.log(`Failed bots: ${remainingBots.join(', ')}`);
+    }
+
+    console.log(`\n✅ Loop completed - processed ${processedCount}/${scavengingBots.length} bots`);
     await client.close();
   } catch (error) {
     console.error("Error in auto-scavenge loop:", error);

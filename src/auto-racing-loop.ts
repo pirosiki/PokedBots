@@ -118,10 +118,16 @@ async function manageRacingBot(client: PokedRaceMCPClient, tokenIndex: number): 
     // 未稼働
     if (isComplete) {
       console.log(`  → Already at 100%/100%! No action needed.`);
+    } else if (status.condition >= 100) {
+      // Conditionが100%の場合は、Batteryを充電
+      console.log(`  → Not active. Condition 100%, Battery ${status.battery}%. Starting in ChargingStation...`);
+      await executeAction(client, tokenIndex, "start", "ChargingStation");
     } else if (status.battery >= BATTERY_THRESHOLD_START) {
+      // Conditionが100%未満で、Batteryが十分ある場合はRepair
       console.log(`  → Not active. Battery ${status.battery}% >= ${BATTERY_THRESHOLD_START}%. Starting in RepairBay...`);
       await executeAction(client, tokenIndex, "start", "RepairBay");
     } else {
+      // Battery不足の場合は先に充電
       console.log(`  → Not active. Battery low (${status.battery}%). Starting in ChargingStation...`);
       await executeAction(client, tokenIndex, "start", "ChargingStation");
     }

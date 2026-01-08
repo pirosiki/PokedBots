@@ -15,7 +15,8 @@
     "auto-scavenge": "tsx src/auto-scavenge-loop.ts",
     "auto-racing": "tsx src/auto-racing-loop.ts",
     "auto-race-entry": "tsx src/auto-race-entry.ts",
-    "repair-racing": "tsx repair-racing-bots.ts"
+    "repair-racing": "tsx repair-racing-bots.ts",
+    "charge-racing": "tsx charge-racing-bots.ts"
   },
   "keywords": [
     "mcp",

@@ -17,8 +17,9 @@ interface GroupAssignment {
 
 async function getUpcomingRaces(client: PokedRaceMCPClient): Promise<number[]> {
   try {
+    // Get only the next race event (first page, typically 5 races at the same time)
     const result = await client.callTool("racing_list_races", {
-      status: "open"
+      sort_by: "start_time"
     });
 
     if (!result || !result.content || !result.content[0] || !result.content[0].text) {

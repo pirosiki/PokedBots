@@ -53,17 +53,30 @@ async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Pro
   }
 }
 
-async function executeAction(client: PokedRaceMCPClient, tokenIndex: number, action: string, zone?: string): Promise<void> {
+async function executeAction(client: PokedRaceMCPClient, tokenIndex: number, action: string, zone?: string): Promise<boolean> {
   try {
+    let result;
     if (action === "complete") {
-      await client.callTool("garage_complete_scavenging", { token_index: tokenIndex });
+      result = await client.callTool("garage_complete_scavenging", { token_index: tokenIndex });
+      if (result.isError) {
+        const errorMsg = result.content?.[0]?.text || "Unknown error";
+        console.error(`  ✗ Failed to complete for bot #${tokenIndex}: ${errorMsg}`);
+        return false;
+      }
       console.log(`  ✓ Completed scavenging for bot #${tokenIndex}`);
     } else if (action === "start" && zone) {
-      await client.callTool("garage_start_scavenging", { token_index: tokenIndex, zone });
+      result = await client.callTool("garage_start_scavenging", { token_index: tokenIndex, zone });
+      if (result.isError) {
+        const errorMsg = result.content?.[0]?.text || "Unknown error";
+        console.error(`  ✗ Failed to start for bot #${tokenIndex}: ${errorMsg}`);
+        return false;
+      }
       console.log(`  ✓ Started scavenging in ${zone} for bot #${tokenIndex}`);
     }
+    return true;
   } catch (error: any) {
-    console.error(`  ✗ Failed to ${action} for bot #${tokenIndex}:`, error.message);
+    console.error(`  ✗ Exception during ${action} for bot #${tokenIndex}:`, error.message);
+    return false;
   }
 }
 

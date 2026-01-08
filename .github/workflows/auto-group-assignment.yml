@@ -9,6 +9,9 @@ on:
 jobs:
   auto-group-assignment:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
 
     steps:
       - name: Disable other workflows
@@ -58,11 +61,11 @@ jobs:
         run: |
           echo "✅ Re-enabling auto-scavenge and auto-racing workflows..."
           curl -X PUT \
-            -H "Accept: application/vnd.github.github+json" \
+            -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-scavenge.yml/enable
           curl -X PUT \
-            -H "Accept: application/vnd.github.github+json" \
+            -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-racing.yml/enable
           echo "✓ Workflows re-enabled"

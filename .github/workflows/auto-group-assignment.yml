@@ -1,9 +1,9 @@
 name: Auto Group Assignment
 
 on:
-  schedule:
-    # Run 4 times daily at 3:10, 9:10, 15:10, 21:10 UTC
-    - cron: '10 3,9,15,21 * * *'
+  # schedule:
+  #   # Run 4 times daily at 3:10, 9:10, 15:10, 21:10 UTC
+  #   - cron: '10 3,9,15,21 * * *'
   workflow_dispatch: # Allow manual trigger
 
 jobs:

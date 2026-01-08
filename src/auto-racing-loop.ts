@@ -102,9 +102,11 @@ async function manageRacingBot(client: PokedRaceMCPClient, tokenIndex: number): 
         await executeAction(client, tokenIndex, "complete");
         await new Promise(resolve => setTimeout(resolve, 300));
         await executeAction(client, tokenIndex, "start", "ChargingStation");
-      } else if (isComplete) {
-        console.log(`  → Battery & Condition both 100%! 🎉 GOAL! Completing...`);
+      } else if (status.condition >= 100) {
+        console.log(`  → Condition 100%! Moving to ChargingStation...`);
         await executeAction(client, tokenIndex, "complete");
+        await new Promise(resolve => setTimeout(resolve, 300));
+        await executeAction(client, tokenIndex, "start", "ChargingStation");
       } else {
         console.log(`  → Repairing... (Battery: ${status.battery}%, Condition: ${status.condition}%)`);
       }

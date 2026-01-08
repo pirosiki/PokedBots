@@ -11,24 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: write
 
     steps:
-      - name: Disable other workflows
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🛑 Disabling auto-scavenge and auto-racing workflows..."
-          curl -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-scavenge.yml/disable
-          curl -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-racing.yml/disable
-          echo "✓ Workflows disabled"
-
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -53,19 +37,3 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add bots-config.json
           git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update bot group assignment [skip ci]" && git push)
-
-      - name: Re-enable other workflows
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "✅ Re-enabling auto-scavenge and auto-racing workflows..."
-          curl -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-scavenge.yml/enable
-          curl -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/auto-racing.yml/enable
-          echo "✓ Workflows re-enabled"

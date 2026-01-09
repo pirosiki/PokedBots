@@ -124,8 +124,20 @@ async function manageRacingBot(client: PokedRaceMCPClient, tokenIndex: number): 
         console.log(`  → Repairing... (Battery: ${status.battery}%, Condition: ${status.condition}%)`);
       }
     } else {
-      // 想定外のゾーン（ScrapHeapsなど）- 警告して放置
-      console.log(`  ⚠️  Warning: Racing bot in unexpected zone "${status.scavenging_zone}". Skipping...`);
+      // ScrapHeapsなど: Racing botは100%/100%を目指すため、常にChargingStation/RepairBayへ
+      console.log(`  ⚠️  Racing bot in "${status.scavenging_zone}". Moving to appropriate zone...`);
+      await executeAction(client, tokenIndex, "complete");
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      if (status.battery < 100) {
+        console.log(`  → Battery not full (${status.battery}%). Moving to ChargingStation...`);
+        await executeAction(client, tokenIndex, "start", "ChargingStation");
+      } else if (status.condition < 100) {
+        console.log(`  → Battery 100%, Condition ${status.condition}%. Moving to RepairBay...`);
+        await executeAction(client, tokenIndex, "start", "RepairBay");
+      } else {
+        console.log(`  → Already at 100%/100%! Leaving inactive.`);
+      }
     }
   } else {
     // 未稼働

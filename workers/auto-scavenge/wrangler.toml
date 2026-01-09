@@ -1,0 +1,12 @@
+name = "pokedbots-auto-scavenge"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[triggers]
+crons = ["*/15 * * * *"]
+
+[vars]
+MCP_SERVER_URL = "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp"
+
+# Secrets (set with: wrangler secret put MCP_API_KEY)
+# MCP_API_KEY = "..."

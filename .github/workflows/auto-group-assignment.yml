@@ -1,10 +1,7 @@
 name: Auto Group Assignment
 
 on:
-  schedule:
-    # Run 4 times daily at JST 3:10, 9:10, 15:10, 21:10 (UTC 18:10, 0:10, 6:10, 12:10)
-    - cron: '10 18,0,6,12 * * *'
-  workflow_dispatch: # Allow manual trigger
+  workflow_dispatch: # Triggered by Cloudflare Workers Scheduler
 
 jobs:
   auto-group-assignment:

@@ -1,0 +1,17 @@
+name = "pokedbots-scheduler"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[triggers]
+crons = [
+  "*/15 * * * *",            # Auto-scavenge every 15 minutes
+  "*/30 * * * *",            # Auto-racing every 30 minutes
+  "10 18,0,6,12 * * *"       # Auto-group-assignment 4 times daily (JST 3:10, 9:10, 15:10, 21:10)
+]
+
+[vars]
+GITHUB_OWNER = "pirosiki"
+GITHUB_REPO = "PokedBots"
+
+# Secrets (set with: wrangler secret put GITHUB_TOKEN)
+# GITHUB_TOKEN = "ghp_..."

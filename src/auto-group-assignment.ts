@@ -53,21 +53,42 @@ async function getRaceParticipants(client: PokedRaceMCPClient, raceId: number): 
   }
 }
 
+async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
+  try {
+    const result = await client.callTool("garage_list_my_pokedbots");
+
+    if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+      return [];
+    }
+
+    const responseText = result.content[0].text;
+    const botMatches = responseText.matchAll(/🏎️ PokedBot #(\d+)/g);
+    const botIndices: number[] = [];
+    for (const match of botMatches) {
+      botIndices.push(parseInt(match[1]));
+    }
+    return botIndices;
+  } catch (error) {
+    console.error(`  ✗ Failed to get owned bots:`, error);
+    return [];
+  }
+}
+
 async function main() {
   const client = new PokedRaceMCPClient();
   const botManager = new BotManager();
 
   try {
-    // Load current configuration to get all bot IDs
-    await botManager.loadConfig();
-    const allBots = [...botManager.getRacingBots(), ...botManager.getScavengingBots()];
-
     console.log(`\n🔄 Dynamic Bot Group Assignment`);
-    console.log(`📅 ${new Date().toISOString()}`);
-    console.log(`🤖 Total bots: ${allBots.length}\n`);
+    console.log(`📅 ${new Date().toISOString()}\n`);
 
     // Connect to MCP server
     await client.connect(SERVER_URL, API_KEY);
+
+    // Get ALL owned bots dynamically from API (not from config)
+    console.log(`Fetching all owned bots...`);
+    const allBots = await getAllOwnedBots(client);
+    console.log(`🤖 Total bots: ${allBots.length}\n`);
 
     // Get all upcoming races
     console.log(`Fetching upcoming races...`);
@@ -86,8 +107,10 @@ async function main() {
     }
 
     // Split into racing and scavenging groups
-    const racingGroup = Array.from(racingBotsSet).filter(bot => allBots.includes(bot));
-    const scavengingGroup = allBots.filter(bot => !racingBotsSet.has(bot));
+    // Racing: bots participating in upcoming races
+    // Scavenging: all other bots
+    const racingGroup = Array.from(racingBotsSet).filter(bot => allBots.includes(bot)).sort((a, b) => a - b);
+    const scavengingGroup = allBots.filter(bot => !racingBotsSet.has(bot)).sort((a, b) => a - b);
 
     console.log(`\n📊 Group Assignment Results:`);
     console.log(`  🏁 Racing group: ${racingGroup.length} bots`);

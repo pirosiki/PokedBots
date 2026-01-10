@@ -7,7 +7,7 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-const BATTERY_THRESHOLD_LOW = 40;    // 緊急ライン
+const BATTERY_THRESHOLD_LOW = 75;    // 緊急ライン（RepairBay時の判断）
 const BATTERY_THRESHOLD_START = 75;   // 開始判断ライン
 
 interface BotStatus {
@@ -177,7 +177,7 @@ async function main() {
     console.log(`\n🏁 Auto-Racing Loop Started`);
     console.log(`📅 ${new Date().toISOString()}`);
     console.log(`🤖 Managing ${racingBots.length} racing bots\n`);
-    console.log(`⚙️  Thresholds: Battery Emergency < ${BATTERY_THRESHOLD_LOW}%, Start >= ${BATTERY_THRESHOLD_START}%`);
+    console.log(`⚙️  Thresholds: Battery threshold = ${BATTERY_THRESHOLD_LOW}% (repair priority cutoff)`);
     console.log(`🎯 Goal: Battery 100% & Condition 100%\n`);
 
     let completedCount = 0;

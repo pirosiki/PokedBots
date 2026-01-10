@@ -8,7 +8,7 @@ const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4dj
 const API_KEY = process.env.MCP_API_KEY;
 
 const BATTERY_THRESHOLD_LOW = 40;    // 緊急ライン
-const BATTERY_THRESHOLD_START = 50;   // 開始判断ライン
+const BATTERY_THRESHOLD_START = 75;   // 開始判断ライン
 
 interface BotStatus {
   token_index: number;

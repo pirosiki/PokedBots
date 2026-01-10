@@ -7,10 +7,10 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-const BATTERY_THRESHOLD = 40;
-const BATTERY_THRESHOLD_HIGH = 80;   // ScrapHeapsに入るバッテリー条件
-const CONDITION_THRESHOLD_HIGH = 80; // ScrapHeapsに入るコンディション条件
-const CONDITION_THRESHOLD_LOW = 40;  // ScrapHeapsから出る条件
+const BATTERY_THRESHOLD = 80;        // ScrapHeapsから出るバッテリー条件
+const BATTERY_THRESHOLD_HIGH = 100;  // ScrapHeapsに入るバッテリー条件
+const CONDITION_THRESHOLD_HIGH = 100; // ScrapHeapsに入るコンディション条件
+const CONDITION_THRESHOLD_LOW = 80;   // ScrapHeapsから出るコンディション条件
 
 interface BotStatus {
   token_index: number;
@@ -109,7 +109,7 @@ async function main() {
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
     console.log(`🤖 Managing ${scavengingBots.length} scavenging bots\n`);
-    console.log(`⚙️  Thresholds: Battery >= ${BATTERY_THRESHOLD_HIGH}% & Condition >= ${CONDITION_THRESHOLD_HIGH}% (ScrapHeaps entry) / Battery < ${BATTERY_THRESHOLD}% or Condition < ${CONDITION_THRESHOLD_LOW}% (ScrapHeaps exit)`);
+    console.log(`⚙️  Thresholds: Battery 100% & Condition 100% (ScrapHeaps entry) / Battery < 80% or Condition < 80% (ScrapHeaps exit)`);
     console.log(`⚡ Processing 2 bots at a time\n`);
 
     // Process bots in parallel (2 at a time)

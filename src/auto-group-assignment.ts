@@ -17,7 +17,7 @@ interface GroupAssignment {
 
 async function getUpcomingRaces(client: PokedRaceMCPClient): Promise<number[]> {
   try {
-    // Get only the next race event (first page, typically 5 races at the same time)
+    // Get upcoming races sorted by start time
     const result = await client.callTool("racing_list_races", {
       sort_by: "start_time"
     });
@@ -27,7 +27,17 @@ async function getUpcomingRaces(client: PokedRaceMCPClient): Promise<number[]> {
     }
 
     const data = JSON.parse(result.content[0].text);
-    return (data.races || []).map((race: any) => race.race_id);
+    const races = data.races || [];
+
+    if (races.length === 0) {
+      return [];
+    }
+
+    // Get only races with the same start_time as the first race (immediate next race event)
+    const nextStartTime = races[0].start_time;
+    const nextRaces = races.filter((race: any) => race.start_time === nextStartTime);
+
+    return nextRaces.map((race: any) => race.race_id);
   } catch (error) {
     console.error(`  ✗ Failed to get upcoming races:`, error);
     return [];

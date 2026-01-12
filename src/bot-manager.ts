@@ -4,12 +4,14 @@ import path from "path";
 const CONFIG_PATH = path.join(process.cwd(), "bots-config.json");
 
 export interface BotsConfig {
+  excluded_bots?: number[];
   racing_bots: number[];
   scavenging_bots: number[];
 }
 
 export class BotManager {
   private config: BotsConfig = {
+    excluded_bots: [],
     racing_bots: [],
     scavenging_bots: [],
   };
@@ -59,11 +61,21 @@ export class BotManager {
   }
 
   getRacingBots(): number[] {
-    return [...this.config.racing_bots];
+    const excluded = this.config.excluded_bots || [];
+    return this.config.racing_bots.filter(bot => !excluded.includes(bot));
   }
 
   getScavengingBots(): number[] {
-    return [...this.config.scavenging_bots];
+    const excluded = this.config.excluded_bots || [];
+    return this.config.scavenging_bots.filter(bot => !excluded.includes(bot));
+  }
+
+  getExcludedBots(): number[] {
+    return [...(this.config.excluded_bots || [])];
+  }
+
+  isExcluded(tokenIndex: number): boolean {
+    return (this.config.excluded_bots || []).includes(tokenIndex);
   }
 
   getBotGroup(tokenIndex: number): "racing" | "scavenging" | "none" {

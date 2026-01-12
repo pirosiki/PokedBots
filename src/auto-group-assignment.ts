@@ -11,6 +11,7 @@ const API_KEY = process.env.MCP_API_KEY;
 const CONFIG_PATH = path.join(process.cwd(), "bots-config.json");
 
 interface GroupAssignment {
+  excluded_bots?: number[];
   racing_bots: number[];
   scavenging_bots: number[];
 }
@@ -92,6 +93,11 @@ async function main() {
     console.log(`\n🔄 Dynamic Bot Group Assignment`);
     console.log(`📅 ${new Date().toISOString()}\n`);
 
+    // Load existing config to preserve excluded_bots list
+    await botManager.loadConfig();
+    const excludedBots = botManager.getExcludedBots();
+    console.log(`🚫 Excluded bots: ${excludedBots.length > 0 ? excludedBots.join(', ') : 'None'}\n`);
+
     // Connect to MCP server
     await client.connect(SERVER_URL, API_KEY);
 
@@ -117,17 +123,23 @@ async function main() {
     }
 
     // Split into racing and scavenging groups
-    // Racing: bots participating in upcoming races
-    // Scavenging: all other bots
-    const racingGroup = Array.from(racingBotsSet).filter(bot => allBots.includes(bot)).sort((a, b) => a - b);
-    const scavengingGroup = allBots.filter(bot => !racingBotsSet.has(bot)).sort((a, b) => a - b);
+    // Racing: bots participating in upcoming races (excluding excluded_bots)
+    // Scavenging: all other bots (excluding excluded_bots)
+    const racingGroup = Array.from(racingBotsSet)
+      .filter(bot => allBots.includes(bot) && !excludedBots.includes(bot))
+      .sort((a, b) => a - b);
+    const scavengingGroup = allBots
+      .filter(bot => !racingBotsSet.has(bot) && !excludedBots.includes(bot))
+      .sort((a, b) => a - b);
 
     console.log(`\n📊 Group Assignment Results:`);
     console.log(`  🏁 Racing group: ${racingGroup.length} bots`);
-    console.log(`  ⛏️  Scavenging group: ${scavengingGroup.length} bots\n`);
+    console.log(`  ⛏️  Scavenging group: ${scavengingGroup.length} bots`);
+    console.log(`  🚫 Excluded: ${excludedBots.length} bots\n`);
 
-    // Save updated configuration
+    // Save updated configuration (preserve excluded_bots list)
     const newConfig: GroupAssignment = {
+      excluded_bots: excludedBots.length > 0 ? excludedBots : undefined,
       racing_bots: racingGroup,
       scavenging_bots: scavengingGroup
     };

@@ -8,8 +8,8 @@ const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4dj
 const API_KEY = process.env.MCP_API_KEY;
 
 // レース15分前に実行するメンテナンス閾値
-const BATTERY_THRESHOLD = 90;      // バッテリー90%未満ならリチャージ
-const CONDITION_THRESHOLD = 80;    // コンディション80%未満ならリペア
+const BATTERY_THRESHOLD = 100;     // バッテリー100%未満ならリチャージ
+const CONDITION_THRESHOLD = 100;   // コンディション100%未満ならリペア
 const MINUTES_BEFORE_RACE = 15;    // レース何分前に処理するか
 
 interface BotStatus {

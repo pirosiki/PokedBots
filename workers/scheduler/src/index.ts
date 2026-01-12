@@ -55,6 +55,8 @@ export default {
       workflowFile = 'auto-racing.yml';
     } else if (event.cron === '10 18,0,6,12 * * *') {
       workflowFile = 'auto-group-assignment.yml';
+    } else if (event.cron === '45 2,8,14,20 * * *') {
+      workflowFile = 'auto-race-maintenance.yml';
     }
 
     if (workflowFile) {

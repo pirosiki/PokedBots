@@ -11,6 +11,7 @@ const API_KEY = process.env.MCP_API_KEY;
 const CONFIG_PATH = path.join(process.cwd(), "bots-config.json");
 
 interface GroupAssignment {
+  excluded_bots: number[];
   racing_bots: number[];
   scavenging_bots: number[];
 }
@@ -126,8 +127,9 @@ async function main() {
     console.log(`  🏁 Racing group: ${racingGroup.length} bots`);
     console.log(`  ⛏️  Scavenging group: ${scavengingGroup.length} bots\n`);
 
-    // Save updated configuration (excluded_bots is not saved, will be reset)
+    // Save updated configuration (excluded_bots reset to empty array, keeping the field)
     const newConfig: GroupAssignment = {
+      excluded_bots: [],  // Always keep the field, reset to empty
       racing_bots: racingGroup,
       scavenging_bots: scavengingGroup
     };

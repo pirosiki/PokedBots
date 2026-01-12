@@ -7,7 +7,7 @@ crons = [
   "*/15 * * * *",            # Auto-scavenge every 15 minutes
   "*/30 * * * *",            # Auto-racing every 30 minutes
   "10 18,0,6,12 * * *",      # Auto-group-assignment 4 times daily (JST 3:10, 9:10, 15:10, 21:10)
-  "45 2,8,14,20 * * *"       # Auto-race-maintenance 15min before races (JST 11:45, 17:45, 23:45, 5:45)
+  "45 5,11,17,23 * * *"      # Auto-race-maintenance 15min before races (JST 2:45, 8:45, 14:45, 20:45)
 ]
 
 [vars]

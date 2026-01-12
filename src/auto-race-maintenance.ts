@@ -1,3 +1,16 @@
+/**
+ * Auto-Race-Maintenance (Batch Processing)
+ *
+ * Prepares bots for races 15 minutes before start time.
+ * IMPORTANT: Processing order matters for Perfect Tune buff!
+ *
+ * Phase 1: Recall from scavenging (parallel)
+ * Phase 2: Recharge battery (parallel) → Adds overcharge
+ * Phase 3: Repair condition (parallel) → Converts to Perfect Tune!
+ *
+ * Perfect Tune > Overcharge, so always recharge BEFORE repair.
+ */
+
 import { PokedRaceMCPClient } from "./mcp-client.js";
 import { BotManager } from "./bot-manager.js";
 import dotenv from "dotenv";
@@ -223,62 +236,117 @@ async function main() {
       return;
     }
 
-    let totalCost = 0;
-    let successCount = 0;
+    // ============================================================
+    // PHASE 0: Get all bot statuses
+    // ============================================================
+    console.log(`\n📊 Phase 0: Fetching bot statuses...`);
+    const botStatuses = new Map<number, BotStatus>();
 
-    // 各ボットのメンテナンス
     for (const tokenIndex of Array.from(botsToMaintain)) {
-      console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
       const status = await getBotStatus(client, tokenIndex);
-      if (!status) {
-        console.log(`⚠️  Could not get status for bot #${tokenIndex}, skipping...`);
-        continue;
-      }
-
-      const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
-      console.log(`🤖 Bot ${displayName}`);
-      console.log(`   Battery: ${status.battery}%, Condition: ${status.condition}%`);
-      console.log(`   Zone: ${status.scavenging_zone || "None"}`);
-
-      // Step 1: スカベンジング中なら呼び戻し
-      if (status.scavenging_zone) {
-        console.log(`\n📥 Recalling from scavenging zone: ${status.scavenging_zone}`);
-        await completeScavenging(client, tokenIndex);
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-
-      // Step 2: バッテリーチェック & リチャージ
-      if (status.battery < BATTERY_THRESHOLD) {
-        console.log(`\n🔋 Battery ${status.battery}% < ${BATTERY_THRESHOLD}%, recharging...`);
-        const recharged = await rechargeBot(client, tokenIndex);
-        if (recharged) {
-          totalCost += 0.1;
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
+      if (status) {
+        botStatuses.set(tokenIndex, status);
+        const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
+        console.log(`  ✓ ${displayName}: Battery ${status.battery}%, Condition ${status.condition}%, Zone: ${status.scavenging_zone || "None"}`);
       } else {
-        console.log(`\n✓ Battery ${status.battery}% is sufficient (>= ${BATTERY_THRESHOLD}%)`);
+        console.log(`  ✗ Bot #${tokenIndex}: Could not get status`);
       }
-
-      // Step 3: コンディションチェック & リペア
-      if (status.condition < CONDITION_THRESHOLD) {
-        console.log(`\n🔧 Condition ${status.condition}% < ${CONDITION_THRESHOLD}%, repairing...`);
-        const repaired = await repairBot(client, tokenIndex);
-        if (repaired) {
-          totalCost += 0.05;
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
-      } else {
-        console.log(`\n✓ Condition ${status.condition}% is sufficient (>= ${CONDITION_THRESHOLD}%)`);
-      }
-
-      successCount++;
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
+
+    console.log(`\n✅ Phase 0 complete: ${botStatuses.size}/${botsToMaintain.size} bots ready`);
+
+    // ============================================================
+    // PHASE 1: Recall all bots from scavenging (PARALLEL)
+    // ============================================================
+    const scavengingBots = Array.from(botStatuses.entries())
+      .filter(([_, status]) => status.scavenging_zone !== null)
+      .map(([tokenIndex, _]) => tokenIndex);
+
+    if (scavengingBots.length > 0) {
+      console.log(`\n📥 Phase 1: Recalling ${scavengingBots.length} bot(s) from scavenging...`);
+
+      const recallPromises = scavengingBots.map(async (tokenIndex) => {
+        const status = botStatuses.get(tokenIndex)!;
+        const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
+        console.log(`  → ${displayName} from ${status.scavenging_zone}`);
+        return completeScavenging(client, tokenIndex);
+      });
+
+      await Promise.all(recallPromises);
+      console.log(`\n✅ Phase 1 complete: All bots recalled`);
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for recalls to settle
+    } else {
+      console.log(`\n✓ Phase 1 skipped: No bots in scavenging zones`);
+    }
+
+    // ============================================================
+    // PHASE 2: Recharge all bots < 100% battery (PARALLEL)
+    // ============================================================
+    const rechargeNeeded = Array.from(botStatuses.entries())
+      .filter(([_, status]) => status.battery < BATTERY_THRESHOLD)
+      .map(([tokenIndex, _]) => tokenIndex);
+
+    let rechargeCount = 0;
+    if (rechargeNeeded.length > 0) {
+      console.log(`\n🔋 Phase 2: Recharging ${rechargeNeeded.length} bot(s)...`);
+
+      const rechargePromises = rechargeNeeded.map(async (tokenIndex) => {
+        const status = botStatuses.get(tokenIndex)!;
+        const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
+        console.log(`  → ${displayName} (${status.battery}%)`);
+        const success = await rechargeBot(client, tokenIndex);
+        if (success) rechargeCount++;
+        return success;
+      });
+
+      await Promise.all(rechargePromises);
+      console.log(`\n✅ Phase 2 complete: ${rechargeCount}/${rechargeNeeded.length} recharged successfully`);
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for recharges to settle
+    } else {
+      console.log(`\n✓ Phase 2 skipped: All bots have sufficient battery`);
+    }
+
+    // ============================================================
+    // PHASE 3: Repair all bots < 100% condition (PARALLEL)
+    // → This triggers PERFECT TUNE when done after recharge!
+    // ============================================================
+    const repairNeeded = Array.from(botStatuses.entries())
+      .filter(([_, status]) => status.condition < CONDITION_THRESHOLD)
+      .map(([tokenIndex, _]) => tokenIndex);
+
+    let repairCount = 0;
+    if (repairNeeded.length > 0) {
+      console.log(`\n🔧 Phase 3: Repairing ${repairNeeded.length} bot(s) (→ Perfect Tune)...`);
+
+      const repairPromises = repairNeeded.map(async (tokenIndex) => {
+        const status = botStatuses.get(tokenIndex)!;
+        const displayName = status.name ? `#${tokenIndex} "${status.name}"` : `#${tokenIndex}`;
+        console.log(`  → ${displayName} (${status.condition}%)`);
+        const success = await repairBot(client, tokenIndex);
+        if (success) repairCount++;
+        return success;
+      });
+
+      await Promise.all(repairPromises);
+      console.log(`\n✅ Phase 3 complete: ${repairCount}/${repairNeeded.length} repaired successfully`);
+      console.log(`   🌟 Perfect Tune buff applied to repaired bots!`);
+    } else {
+      console.log(`\n✓ Phase 3 skipped: All bots have sufficient condition`);
+    }
+
+    // ============================================================
+    // Summary
+    // ============================================================
+    const totalCost = (rechargeCount * 0.1) + (repairCount * 0.05);
 
     console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`\n✅ Maintenance completed`);
-    console.log(`   Processed: ${successCount}/${botsToMaintain.size} bots`);
-    console.log(`   Estimated cost: ${totalCost.toFixed(2)} ICP (+ transfer fees)`);
+    console.log(`   Bots processed: ${botStatuses.size}/${botsToMaintain.size}`);
+    console.log(`   Recalled: ${scavengingBots.length}`);
+    console.log(`   Recharged: ${rechargeCount}/${rechargeNeeded.length}`);
+    console.log(`   Repaired: ${repairCount}/${repairNeeded.length}`);
+    console.log(`   Total cost: ${totalCost.toFixed(2)} ICP (+ transfer fees)`);
 
     await client.close();
   } catch (error) {

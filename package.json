@@ -13,7 +13,6 @@
     "auto-assign": "tsx src/auto-assign.ts",
     "auto-group-assignment": "tsx src/auto-group-assignment.ts",
     "auto-scavenge": "tsx src/auto-scavenge-loop.ts",
-    "auto-racing": "tsx src/auto-racing-loop.ts",
     "auto-race-entry": "tsx src/auto-race-entry.ts",
     "auto-race-maintenance": "tsx src/auto-race-maintenance.ts",
     "repair-racing": "tsx repair-racing-bots.ts",

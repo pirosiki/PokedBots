@@ -1,3 +1,14 @@
+/**
+ * Auto-Scavenge Loop (Unified Bot Management)
+ *
+ * Manages ALL bots (both racing and scavenging groups) with the same logic:
+ * - Entry: Battery 95% & Condition 95%
+ * - Exit: Battery < 80% OR Condition < 80%
+ * - Zones: ScrapHeaps for parts, ChargingStation/RepairBay for maintenance
+ *
+ * Racing bots are maintained at 100%/100% by auto-race-maintenance before races.
+ */
+
 import { PokedRaceMCPClient } from "./mcp-client.js";
 import { BotManager } from "./bot-manager.js";
 import dotenv from "dotenv";
@@ -105,15 +116,19 @@ async function main() {
     await botManager.loadConfig();
     await client.connect(SERVER_URL, API_KEY);
 
+    // Combine both racing and scavenging bots - all use the same logic now
+    const racingBots = botManager.getRacingBots();
     const scavengingBots = botManager.getScavengingBots();
+    const allBots = [...racingBots, ...scavengingBots];
+
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
-    console.log(`🤖 Managing ${scavengingBots.length} scavenging bots\n`);
+    console.log(`🤖 Managing ${allBots.length} total bots (${racingBots.length} racing + ${scavengingBots.length} scavenging)\n`);
     console.log(`⚙️  Thresholds: Battery 95% & Condition 95% (ScrapHeaps entry) / Battery < 80% or Condition < 80% (ScrapHeaps exit)`);
     console.log(`⚡ Processing 2 bots at a time\n`);
 
     // Process bots in parallel (2 at a time)
-    let remainingBots = [...scavengingBots];
+    let remainingBots = [...allBots];
     let processedCount = 0;
     let retryCount = 0;
     const maxRetries = 5;
@@ -222,7 +237,7 @@ async function main() {
           }
         }
 
-        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${scavengingBots.length} total, ${failedBots.length} failed)`);
+        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${allBots.length} total, ${failedBots.length} failed)`);
 
         // Small delay between chunks
         if (i < chunks.length - 1) {
@@ -244,7 +259,7 @@ async function main() {
       console.log(`Failed bots: ${remainingBots.join(', ')}`);
     }
 
-    console.log(`\n✅ Loop completed - processed ${processedCount}/${scavengingBots.length} bots`);
+    console.log(`\n✅ Loop completed - processed ${processedCount}/${allBots.length} bots`);
     await client.close();
   } catch (error) {
     console.error("Error in auto-scavenge loop:", error);

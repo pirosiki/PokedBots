@@ -12,7 +12,6 @@
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
-import { BotManager } from "./bot-manager.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -37,6 +36,27 @@ interface RaceInfo {
   race_id: number;
   start_time_utc: string;
   participant_bots: number[];
+}
+
+async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
+  try {
+    const result = await client.callTool("garage_list_my_pokedbots");
+
+    if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+      return [];
+    }
+
+    const responseText = result.content[0].text;
+    const botMatches = responseText.matchAll(/🏎️ PokedBot #(\d+)/g);
+    const botIndices: number[] = [];
+    for (const match of botMatches) {
+      botIndices.push(parseInt(match[1]));
+    }
+    return botIndices;
+  } catch (error) {
+    console.error(`  ✗ Failed to get owned bots:`, error);
+    return [];
+  }
 }
 
 async function getUpcomingRaces(client: PokedRaceMCPClient): Promise<RaceInfo[]> {
@@ -170,13 +190,11 @@ async function repairBot(client: PokedRaceMCPClient, tokenIndex: number): Promis
 
 async function main() {
   const client = new PokedRaceMCPClient();
-  const botManager = new BotManager();
 
   try {
     console.log(`\n🏁 Auto Race Maintenance (15 min before race)`);
     console.log(`📅 ${new Date().toISOString()}\n`);
 
-    await botManager.loadConfig();
     await client.connect(SERVER_URL, API_KEY);
 
     // 現在時刻
@@ -217,10 +235,15 @@ async function main() {
     }
 
     // レースに参加する自分のボットを特定
-    const allOwnedBots = [...botManager.getRacingBots(), ...botManager.getScavengingBots()];
+    // NOTE: excluded_bots は無視！レース参加ボットは全て処理する
+    console.log(`Fetching all owned bots from API...`);
+    const allOwnedBots = await getAllOwnedBots(client);
+    console.log(`Found ${allOwnedBots.length} owned bots\n`);
+
     const botsToMaintain = new Set<number>();
 
     for (const race of targetRaces) {
+      console.log(`Race #${race.race_id}: ${race.participant_bots.length} total participants`);
       for (const botId of race.participant_bots) {
         if (allOwnedBots.includes(botId)) {
           botsToMaintain.add(botId);

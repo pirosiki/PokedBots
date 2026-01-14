@@ -117,12 +117,12 @@ async function getUpcomingEvents(client: PokedRaceMCPClient): Promise<EventInfo[
   }
 
   const responseText = result.content[0].text;
-  const events: EventInfo[] = [];
 
   // Split by event separators
   const eventBlocks = responseText.split('---').filter(block => block.includes('**Event #'));
 
   const now = new Date();
+  const allFutureEvents: EventInfo[] = [];
 
   for (const block of eventBlocks) {
     const eventIdMatch = block.match(/\*\*Event #(\d+)\*\*:\s*([^\n]+)/);
@@ -135,9 +135,12 @@ async function getUpcomingEvents(client: PokedRaceMCPClient): Promise<EventInfo[
     const startTime = new Date(startTimeMatch[1]);
     const minutesUntilStart = Math.floor((startTime.getTime() - now.getTime()) / 60000);
 
-    // Only consider events that start in 25-35 minutes (30 min target with buffer)
-    if (minutesUntilStart >= 25 && minutesUntilStart <= 35) {
-      events.push({
+    // Registration closes 15 minutes before event start
+    const registrationDeadline = 15;
+
+    // Only consider future events that haven't reached registration deadline yet
+    if (minutesUntilStart > registrationDeadline) {
+      allFutureEvents.push({
         eventId,
         eventName,
         startTime,
@@ -147,8 +150,20 @@ async function getUpcomingEvents(client: PokedRaceMCPClient): Promise<EventInfo[
     }
   }
 
-  console.log(`✅ Found ${events.length} events starting in ~30 minutes`);
-  return events;
+  // Sort by start time (earliest first)
+  allFutureEvents.sort((a, b) => a.startTime.getTime() - b.startTime.getTime());
+
+  // Get the next event time (group events with same start time)
+  if (allFutureEvents.length > 0) {
+    const nextEventTime = allFutureEvents[0].startTime.getTime();
+    const nextEvents = allFutureEvents.filter(e => e.startTime.getTime() === nextEventTime);
+
+    console.log(`✅ Found ${nextEvents.length} upcoming events (next event in ${nextEvents[0].minutesUntilStart} minutes)`);
+    return nextEvents;
+  }
+
+  console.log(`⚠️  No upcoming events found`);
+  return [];
 }
 
 async function getExistingRegistrations(client: PokedRaceMCPClient): Promise<Map<number, number[]>> {

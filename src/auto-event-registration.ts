@@ -268,7 +268,17 @@ async function main() {
         console.log(`   Already registered: ${alreadyRegistered.length} bots`);
       }
 
-      // Group bots by race class
+      // Count already registered bots per class
+      const registeredByClass = new Map<string, number>();
+      for (const botId of alreadyRegistered) {
+        const bot = allBots.find(b => b.tokenIndex === botId);
+        if (bot) {
+          const count = registeredByClass.get(bot.raceClass) || 0;
+          registeredByClass.set(bot.raceClass, count + 1);
+        }
+      }
+
+      // Group bots by race class (excluding already registered)
       const botsByClass = new Map<string, BotStats[]>();
 
       for (const bot of allBots) {
@@ -283,10 +293,17 @@ async function main() {
         botsByClass.get(bot.raceClass)!.push(bot);
       }
 
-      // Register top N bots per class
+      // Register top N bots per class (considering already registered count)
       for (const [raceClass, bots] of botsByClass.entries()) {
         const classConfig = CLASS_THRESHOLDS[raceClass as keyof typeof CLASS_THRESHOLDS];
-        const numToRegister = classConfig.registrations;
+        const maxSlots = classConfig.registrations;
+        const alreadyRegisteredCount = registeredByClass.get(raceClass) || 0;
+        const slotsRemaining = maxSlots - alreadyRegisteredCount;
+
+        if (slotsRemaining <= 0) {
+          console.log(`\n   📊 ${raceClass} Class: Already full (${alreadyRegisteredCount}/${maxSlots})`);
+          continue;
+        }
 
         if (bots.length === 0) {
           continue;
@@ -295,9 +312,9 @@ async function main() {
         // Sort by currentRating (descending)
         bots.sort((a, b) => b.currentRating - a.currentRating);
 
-        const toRegister = bots.slice(0, numToRegister);
+        const toRegister = bots.slice(0, slotsRemaining);
 
-        console.log(`\n   📊 ${raceClass} Class (registering top ${numToRegister}):`);
+        console.log(`\n   📊 ${raceClass} Class (${alreadyRegisteredCount}/${maxSlots} registered, adding ${toRegister.length}):`);
 
         for (const bot of toRegister) {
           console.log(`      #${bot.tokenIndex} ${bot.name} - Current: ${bot.currentRating} (at100: ${bot.at100Rating}, Battery: ${bot.battery}%, Condition: ${bot.condition}%)`);

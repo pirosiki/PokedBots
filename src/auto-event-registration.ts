@@ -64,8 +64,14 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
     const statsMatch = block.match(/📊 Stats[^:]*:\s*SPD\s+(\d+)\/\d+\s*\|\s*PWR\s+(\d+)\/\d+\s*\|\s*ACC\s+(\d+)\/\d+\s*\|\s*STB\s+(\d+)\/\d+/);
     const conditionMatch = block.match(/🔋 Battery: (\d+)% \| 🔧 Condition: (\d+)%/);
     const factionMatch = block.match(/⚡\s*(\w+)/);
+    const scavengingMatch = block.match(/🔍 SCAVENGING: Active/);
 
     if (!tokenMatch || !ratingMatch || !statsMatch || !conditionMatch) continue;
+
+    // Skip bots that are currently scavenging
+    if (scavengingMatch) {
+      continue;
+    }
 
     const tokenIndex = parseInt(tokenMatch[1]);
     const name = tokenMatch[2] || `Bot #${tokenIndex}`;
@@ -81,10 +87,10 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
     const battery = parseInt(conditionMatch[1]);
     const condition = parseInt(conditionMatch[2]);
 
-    // Determine race class from rating (use game's definition)
+    // Determine race class from at100Rating (base + upgrades, no penalties)
     let raceClass = "Junker";
     for (const [className, threshold] of Object.entries(CLASS_THRESHOLDS)) {
-      if (currentRating >= threshold.min && currentRating <= threshold.max) {
+      if (at100Rating >= threshold.min && at100Rating <= threshold.max) {
         raceClass = className;
         break;
       }
@@ -93,7 +99,7 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
     bots.push({
       tokenIndex,
       name,
-      rating: currentRating,
+      rating: at100Rating, // Use at100Rating for sorting
       currentRating,
       at100Rating,
       raceClass,
@@ -296,15 +302,15 @@ async function main() {
           continue;
         }
 
-        // Sort by current rating (descending)
-        bots.sort((a, b) => b.currentRating - a.currentRating);
+        // Sort by at100Rating (base + upgrades, descending)
+        bots.sort((a, b) => b.rating - a.rating);
 
         const toRegister = bots.slice(0, numToRegister);
 
         console.log(`\n   📊 ${raceClass} Class (registering top ${numToRegister}):`);
 
         for (const bot of toRegister) {
-          console.log(`      #${bot.tokenIndex} ${bot.name} - Rating: ${bot.currentRating} (Battery: ${bot.battery}%, Condition: ${bot.condition}%)`);
+          console.log(`      #${bot.tokenIndex} ${bot.name} - Rating: ${bot.at100Rating} (Current: ${bot.currentRating}, Battery: ${bot.battery}%, Condition: ${bot.condition}%)`);
 
           await registerForEvent(client, event.eventId, bot.tokenIndex, bot.name);
 

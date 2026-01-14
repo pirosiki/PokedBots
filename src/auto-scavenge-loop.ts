@@ -10,7 +10,6 @@
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
-import { BotManager } from "./bot-manager.js";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -108,22 +107,37 @@ function chunkArray<T>(array: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
+  const result = await client.callTool("garage_list_my_pokedbots", {});
+
+  if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+    return [];
+  }
+
+  const responseText = result.content[0].text;
+  const botMatches = responseText.matchAll(/🏎️ PokedBot #(\d+)/g);
+  const botIndices: number[] = [];
+
+  for (const match of botMatches) {
+    botIndices.push(parseInt(match[1]));
+  }
+
+  return botIndices;
+}
+
 async function main() {
   const client = new PokedRaceMCPClient();
-  const botManager = new BotManager();
 
   try {
-    await botManager.loadConfig();
     await client.connect(SERVER_URL, API_KEY);
 
-    // Combine both racing and scavenging bots - all use the same logic now
-    const racingBots = botManager.getRacingBots();
-    const scavengingBots = botManager.getScavengingBots();
-    const allBots = [...racingBots, ...scavengingBots];
+    // Get all owned bots directly from the API
+    console.log(`\n📋 Fetching all owned bots...`);
+    const allBots = await getAllOwnedBots(client);
 
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
-    console.log(`🤖 Managing ${allBots.length} total bots (${racingBots.length} racing + ${scavengingBots.length} scavenging)\n`);
+    console.log(`🤖 Managing ${allBots.length} total bots\n`);
     console.log(`⚙️  Thresholds: Battery 95% & Condition 95% (ScrapHeaps entry) / Battery < 80% or Condition < 80% (ScrapHeaps exit)`);
     console.log(`⚡ Processing 2 bots at a time\n`);
 

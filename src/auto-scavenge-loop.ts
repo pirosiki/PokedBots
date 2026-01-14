@@ -165,6 +165,25 @@ async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
   return botIndices;
 }
 
+async function getEventRegisteredBots(client: PokedRaceMCPClient): Promise<Set<number>> {
+  const result = await client.callTool("racing_get_my_registrations", {});
+
+  if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+    return new Set();
+  }
+
+  const responseText = result.content[0].text;
+  const registeredBots = new Set<number>();
+
+  // Parse: "🤖 Bot: #1234"
+  const botMatches = responseText.matchAll(/🤖 Bot: #(\d+)/g);
+  for (const match of botMatches) {
+    registeredBots.add(parseInt(match[1]));
+  }
+
+  return registeredBots;
+}
+
 async function main() {
   const client = new PokedRaceMCPClient();
 
@@ -175,14 +194,19 @@ async function main() {
     console.log(`\n📋 Fetching all owned bots...`);
     const allBots = await getAllOwnedBots(client);
 
+    // Get bots registered for upcoming events (skip them)
+    console.log(`🏁 Checking event registrations...`);
+    const eventRegisteredBots = await getEventRegisteredBots(client);
+    const botsToProcess = allBots.filter(bot => !eventRegisteredBots.has(bot));
+
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
-    console.log(`🤖 Managing ${allBots.length} total bots\n`);
+    console.log(`🤖 Total bots: ${allBots.length}, Event registered: ${eventRegisteredBots.size}, Processing: ${botsToProcess.length}\n`);
     console.log(`⚙️  Thresholds: Battery 95% & Condition 95% (ScrapHeaps entry) / Battery < 80% or Condition < 80% (ScrapHeaps exit)`);
     console.log(`⚡ Processing 2 bots at a time\n`);
 
     // Process bots in parallel (2 at a time)
-    let remainingBots = [...allBots];
+    let remainingBots = [...botsToProcess];
     let processedCount = 0;
     let retryCount = 0;
     const maxRetries = 5;
@@ -279,7 +303,7 @@ async function main() {
           }
         }
 
-        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${allBots.length} total, ${failedBots.length} failed)`);
+        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${botsToProcess.length} total, ${failedBots.length} failed)`);
 
         // Small delay between chunks
         if (i < chunks.length - 1) {
@@ -301,7 +325,7 @@ async function main() {
       console.log(`Failed bots: ${remainingBots.join(', ')}`);
     }
 
-    console.log(`\n✅ Loop completed - processed ${processedCount}/${allBots.length} bots`);
+    console.log(`\n✅ Loop completed - processed ${processedCount}/${botsToProcess.length} bots (${eventRegisteredBots.size} skipped for events)`);
     await client.close();
   } catch (error) {
     console.error("Error in auto-scavenge loop:", error);

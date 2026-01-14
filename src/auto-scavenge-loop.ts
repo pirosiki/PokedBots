@@ -165,23 +165,34 @@ async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
   return botIndices;
 }
 
-async function getEventRegisteredBots(client: PokedRaceMCPClient): Promise<Set<number>> {
-  const result = await client.callTool("racing_get_my_registrations", {});
+async function getMinutesUntilNextEvent(client: PokedRaceMCPClient): Promise<number | null> {
+  const result = await client.callTool("racing_list_events", {});
 
   if (!result || !result.content || !result.content[0] || !result.content[0].text) {
-    return new Set();
+    return null;
   }
 
   const responseText = result.content[0].text;
-  const registeredBots = new Set<number>();
+  const now = new Date();
 
-  // Parse: "🤖 Bot: #1234"
-  const botMatches = responseText.matchAll(/🤖 Bot: #(\d+)/g);
-  for (const match of botMatches) {
-    registeredBots.add(parseInt(match[1]));
+  // Parse event start times: "📅 Start: 2025-01-15T18:00:00Z"
+  const startTimeMatches = responseText.matchAll(/📅 Start:\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/g);
+
+  let minMinutes: number | null = null;
+
+  for (const match of startTimeMatches) {
+    const startTime = new Date(match[1]);
+    const minutesUntil = Math.floor((startTime.getTime() - now.getTime()) / 60000);
+
+    // Only consider future events
+    if (minutesUntil > 0) {
+      if (minMinutes === null || minutesUntil < minMinutes) {
+        minMinutes = minutesUntil;
+      }
+    }
   }
 
-  return registeredBots;
+  return minMinutes;
 }
 
 async function main() {
@@ -190,23 +201,34 @@ async function main() {
   try {
     await client.connect(SERVER_URL, API_KEY);
 
+    // Check if we're too close to an event (skip if within 15 minutes)
+    console.log(`\n🏁 Checking upcoming events...`);
+    const minutesUntilEvent = await getMinutesUntilNextEvent(client);
+
+    if (minutesUntilEvent !== null && minutesUntilEvent <= 15) {
+      console.log(`⏭️  Skipping - race starts in ${minutesUntilEvent} minutes (within 15min pre-race window)`);
+      await client.close();
+      return;
+    }
+
+    if (minutesUntilEvent !== null) {
+      console.log(`✅ Next event in ${minutesUntilEvent} minutes - OK to proceed`);
+    } else {
+      console.log(`✅ No upcoming events found - OK to proceed`);
+    }
+
     // Get all owned bots directly from the API
     console.log(`\n📋 Fetching all owned bots...`);
     const allBots = await getAllOwnedBots(client);
 
-    // Get bots registered for upcoming events (skip them)
-    console.log(`🏁 Checking event registrations...`);
-    const eventRegisteredBots = await getEventRegisteredBots(client);
-    const botsToProcess = allBots.filter(bot => !eventRegisteredBots.has(bot));
-
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);
-    console.log(`🤖 Total bots: ${allBots.length}, Event registered: ${eventRegisteredBots.size}, Processing: ${botsToProcess.length}\n`);
+    console.log(`🤖 Managing ${allBots.length} bots\n`);
     console.log(`⚙️  Thresholds: Battery 95% & Condition 95% (ScrapHeaps entry) / Battery < 80% or Condition < 80% (ScrapHeaps exit)`);
     console.log(`⚡ Processing 2 bots at a time\n`);
 
     // Process bots in parallel (2 at a time)
-    let remainingBots = [...botsToProcess];
+    let remainingBots = [...allBots];
     let processedCount = 0;
     let retryCount = 0;
     const maxRetries = 5;
@@ -303,7 +325,7 @@ async function main() {
           }
         }
 
-        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${botsToProcess.length} total, ${failedBots.length} failed)`);
+        console.log(`✓ Chunk ${i + 1} complete (${processedCount}/${allBots.length} total, ${failedBots.length} failed)`);
 
         // Small delay between chunks
         if (i < chunks.length - 1) {
@@ -325,7 +347,7 @@ async function main() {
       console.log(`Failed bots: ${remainingBots.join(', ')}`);
     }
 
-    console.log(`\n✅ Loop completed - processed ${processedCount}/${botsToProcess.length} bots (${eventRegisteredBots.size} skipped for events)`);
+    console.log(`\n✅ Loop completed - processed ${processedCount}/${allBots.length} bots`);
     await client.close();
   } catch (error) {
     console.error("Error in auto-scavenge loop:", error);

@@ -43,9 +43,9 @@ const CLASS_THRESHOLDS = {
 };
 
 async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
-  console.log("📋 Fetching all bots...");
+  console.log("📋 Fetching racer bots (excluding scavengers)...");
 
-  const result = await client.callTool("garage_list_my_pokedbots", {});
+  const result = await client.callTool("garage_list_my_pokedbots", { only_racers: true });
 
   if (!result || !result.content || !result.content[0] || !result.content[0].text) {
     throw new Error("Failed to get bot list");
@@ -64,14 +64,10 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
     const statsMatch = block.match(/📊 Stats[^:]*:\s*SPD\s+(\d+)\/\d+\s*\|\s*PWR\s+(\d+)\/\d+\s*\|\s*ACC\s+(\d+)\/\d+\s*\|\s*STB\s+(\d+)\/\d+/);
     const conditionMatch = block.match(/🔋 Battery: (\d+)% \| 🔧 Condition: (\d+)%/);
     const factionMatch = block.match(/⚡\s*(\w+)/);
-    const scavengingMatch = block.match(/🔍 SCAVENGING: Active/);
+    // Parse class directly from API: "🏆 Class: 🗑️ Scrap (0-19 rating)"
+    const classMatch = block.match(/🏆 Class:[^a-zA-Z]*(Scrap|Junker|Raider|Elite|SilentKlan)/);
 
     if (!tokenMatch || !ratingMatch || !statsMatch || !conditionMatch) continue;
-
-    // Skip bots that are currently scavenging
-    if (scavengingMatch) {
-      continue;
-    }
 
     const tokenIndex = parseInt(tokenMatch[1]);
     const name = tokenMatch[2] || `Bot #${tokenIndex}`;
@@ -87,14 +83,8 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
     const battery = parseInt(conditionMatch[1]);
     const condition = parseInt(conditionMatch[2]);
 
-    // Determine race class from at100Rating (base + upgrades, no penalties)
-    let raceClass = "Junker";
-    for (const [className, threshold] of Object.entries(CLASS_THRESHOLDS)) {
-      if (at100Rating >= threshold.min && at100Rating <= threshold.max) {
-        raceClass = className;
-        break;
-      }
-    }
+    // Get race class directly from API response
+    const raceClass = classMatch ? classMatch[1] : "Junker";
 
     bots.push({
       tokenIndex,
@@ -302,15 +292,15 @@ async function main() {
           continue;
         }
 
-        // Sort by at100Rating (base + upgrades, descending)
-        bots.sort((a, b) => b.rating - a.rating);
+        // Sort by currentRating (descending)
+        bots.sort((a, b) => b.currentRating - a.currentRating);
 
         const toRegister = bots.slice(0, numToRegister);
 
         console.log(`\n   📊 ${raceClass} Class (registering top ${numToRegister}):`);
 
         for (const bot of toRegister) {
-          console.log(`      #${bot.tokenIndex} ${bot.name} - Rating: ${bot.at100Rating} (Current: ${bot.currentRating}, Battery: ${bot.battery}%, Condition: ${bot.condition}%)`);
+          console.log(`      #${bot.tokenIndex} ${bot.name} - Current: ${bot.currentRating} (at100: ${bot.at100Rating}, Battery: ${bot.battery}%, Condition: ${bot.condition}%)`);
 
           await registerForEvent(client, event.eventId, bot.tokenIndex, bot.name);
 

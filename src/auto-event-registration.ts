@@ -33,13 +33,13 @@ interface EventInfo {
   registeredBots: number[];
 }
 
-// Rating thresholds for race classes
+// Rating thresholds for race classes (from RaceClassUtils.mo)
 const CLASS_THRESHOLDS = {
-  Scrap: { min: 0, max: 29, registrations: 3 },
-  Junker: { min: 30, max: 49, registrations: 3 },
-  Raider: { min: 50, max: 69, registrations: 3 },
-  Elite: { min: 70, max: 89, registrations: 4 }, // Elite gets 4 bots
-  SilentKlan: { min: 90, max: 100, registrations: 3 },
+  Scrap: { min: 0, max: 19, registrations: 3 },
+  Junker: { min: 20, max: 29, registrations: 3 },
+  Raider: { min: 30, max: 39, registrations: 3 },
+  Elite: { min: 40, max: 49, registrations: 4 }, // Elite gets 4 bots
+  SilentKlan: { min: 50, max: 100, registrations: 3 },
 };
 
 async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
@@ -55,26 +55,33 @@ async function getAllBots(client: PokedRaceMCPClient): Promise<BotStats[]> {
   const bots: BotStats[] = [];
 
   // Parse bot data from text response
-  const botMatches = responseText.matchAll(
-    /🏎️ PokedBot #(\d+)(?: "([^"]+)")?\s+⚡ Rating[^:]*:\s*(\d+)\/(\d+)\s*\|\s*⚡\s*(\w+)\s+📊 Stats[^:]*:\s*SPD\s+(\d+)\/(\d+)\s*\|\s*PWR\s+(\d+)\/(\d+)\s*\|\s*ACC\s+(\d+)\/(\d+)\s*\|\s*STB\s+(\d+)\/(\d+)\s+📈 Total Current: (\d+) \| Total at 100: (\d+)[^\n]*\n\s+🔋 Battery: (\d+)% \| 🔧 Condition: (\d+)%/g
-  );
+  // Split into bot blocks
+  const botBlocks = responseText.split(/(?=🏎️ PokedBot #)/g).filter((b: string) => b.includes('PokedBot #'));
 
-  for (const match of botMatches) {
-    const tokenIndex = parseInt(match[1]);
-    const name = match[2] || `Bot #${tokenIndex}`;
-    const currentRating = parseInt(match[3]);
-    const at100Rating = parseInt(match[4]);
-    const faction = match[5];
+  for (const block of botBlocks) {
+    const tokenMatch = block.match(/🏎️ PokedBot #(\d+)(?: "([^"]+)")?/);
+    const ratingMatch = block.match(/⚡ Rating[^:]*:\s*(\d+)\/(\d+)/);
+    const statsMatch = block.match(/📊 Stats[^:]*:\s*SPD\s+(\d+)\/\d+\s*\|\s*PWR\s+(\d+)\/\d+\s*\|\s*ACC\s+(\d+)\/\d+\s*\|\s*STB\s+(\d+)\/\d+/);
+    const conditionMatch = block.match(/🔋 Battery: (\d+)% \| 🔧 Condition: (\d+)%/);
+    const factionMatch = block.match(/⚡\s*(\w+)/);
 
-    const currentSpeed = parseInt(match[6]);
-    const currentPower = parseInt(match[8]);
-    const currentAccel = parseInt(match[10]);
-    const currentStability = parseInt(match[12]);
+    if (!tokenMatch || !ratingMatch || !statsMatch || !conditionMatch) continue;
 
-    const battery = parseInt(match[15]);
-    const condition = parseInt(match[16]);
+    const tokenIndex = parseInt(tokenMatch[1]);
+    const name = tokenMatch[2] || `Bot #${tokenIndex}`;
+    const currentRating = parseInt(ratingMatch[1]);
+    const at100Rating = parseInt(ratingMatch[2]);
+    const faction = factionMatch ? factionMatch[1] : "Unknown";
 
-    // Determine race class based on current rating
+    const currentSpeed = parseInt(statsMatch[1]);
+    const currentPower = parseInt(statsMatch[2]);
+    const currentAccel = parseInt(statsMatch[3]);
+    const currentStability = parseInt(statsMatch[4]);
+
+    const battery = parseInt(conditionMatch[1]);
+    const condition = parseInt(conditionMatch[2]);
+
+    // Determine race class from rating (use game's definition)
     let raceClass = "Junker";
     for (const [className, threshold] of Object.entries(CLASS_THRESHOLDS)) {
       if (currentRating >= threshold.min && currentRating <= threshold.max) {

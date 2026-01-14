@@ -26,7 +26,7 @@ async function main() {
     const eventsText = eventsResult.content[0].text;
 
     // Split by event separators
-    const eventBlocks = eventsText.split('---').filter(block => block.includes('**Event #'));
+    const eventBlocks = eventsText.split('---').filter((block: string) => block.includes('**Event #'));
 
     const now = new Date();
     console.log(`Current time: ${now.toISOString()}\n`);
@@ -81,10 +81,11 @@ async function main() {
     for (const match of botMatches) {
       const rating = parseInt(match[2]);
 
-      if (rating < 30) classCounts.Scrap++;
-      else if (rating < 50) classCounts.Junker++;
-      else if (rating < 70) classCounts.Raider++;
-      else if (rating < 90) classCounts.Elite++;
+      // Use correct game class definitions (from RaceClassUtils.mo)
+      if (rating < 20) classCounts.Scrap++;
+      else if (rating < 30) classCounts.Junker++;
+      else if (rating < 40) classCounts.Raider++;
+      else if (rating < 50) classCounts.Elite++;
       else classCounts.SilentKlan++;
     }
 

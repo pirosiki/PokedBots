@@ -32,8 +32,9 @@ interface BotStatus {
   name?: string;
 }
 
-interface RaceInfo {
-  race_id: number;
+interface EventInfo {
+  event_id: number;
+  event_name: string;
   start_time_utc: string;
   participant_bots: number[];
 }
@@ -59,46 +60,46 @@ async function getAllOwnedBots(client: PokedRaceMCPClient): Promise<number[]> {
   }
 }
 
-async function getUpcomingRaces(client: PokedRaceMCPClient): Promise<RaceInfo[]> {
+async function getUpcomingEvents(client: PokedRaceMCPClient): Promise<EventInfo[]> {
   try {
-    const result = await client.callTool("racing_list_races", {
-      status: "Upcoming",
-      sort_by: "start_time"
-    });
+    const result = await client.callTool("racing_get_my_registrations", {});
 
     if (!result || !result.content || !result.content[0] || !result.content[0].text) {
       return [];
     }
 
-    const data = JSON.parse(result.content[0].text);
-    const races = data.races || [];
+    const responseText = result.content[0].text;
 
-    const raceInfos: RaceInfo[] = [];
-    for (const race of races) {
-      // レース詳細を取得して参加者を確認
-      const detailResult = await client.callTool("racing_get_race_details", {
-        race_id: race.race_id
-      });
+    // Parse the text response to extract event registrations
+    // Format: **Event #191**: Daily Sprint Challenge
+    //         🤖 Bot: #5136 | Class: Elite
+    //         ⏰ Starts: 1h 53m | 2026-01-14T00:00:00Z
 
-      if (detailResult && detailResult.content && detailResult.content[0] && detailResult.content[0].text) {
-        const detailData = JSON.parse(detailResult.content[0].text);
-        const entries = detailData.entries || [];
-        const participantBots = entries.map((entry: any) => parseInt(entry.nft_id));
+    const eventMap = new Map<number, EventInfo>();
 
-        raceInfos.push({
-          race_id: race.race_id,
-          start_time_utc: race.start_time_utc,
-          participant_bots: participantBots
+    const eventMatches = responseText.matchAll(/\*\*Event #(\d+)\*\*:\s*([^\n]+)\n🤖 Bot: #(\d+)[^\n]*\n[^\n]*\n⏰ Starts:[^\|]*\|\s*([^\n]+)/g);
+
+    for (const match of eventMatches) {
+      const eventId = parseInt(match[1]);
+      const eventName = match[2].trim();
+      const botId = parseInt(match[3]);
+      const startTime = match[4].trim();
+
+      if (!eventMap.has(eventId)) {
+        eventMap.set(eventId, {
+          event_id: eventId,
+          event_name: eventName,
+          start_time_utc: startTime,
+          participant_bots: []
         });
       }
 
-      // API負荷軽減
-      await new Promise(resolve => setTimeout(resolve, 200));
+      eventMap.get(eventId)!.participant_bots.push(botId);
     }
 
-    return raceInfos;
+    return Array.from(eventMap.values());
   } catch (error) {
-    console.error(`  ✗ Failed to get upcoming races:`, error);
+    console.error(`  ✗ Failed to get event registrations:`, error);
     return [];
   }
 }
@@ -204,57 +205,57 @@ async function main() {
     console.log(`Current time: ${now.toISOString()}`);
     console.log(`Target race start time: ${targetTime.toISOString()} (${MINUTES_BEFORE_RACE} min from now)\n`);
 
-    // 全レース情報を取得
-    console.log(`Fetching upcoming races...`);
-    const races = await getUpcomingRaces(client);
-    console.log(`Found ${races.length} upcoming races\n`);
+    // 全イベント登録情報を取得
+    console.log(`Fetching event registrations...`);
+    const events = await getUpcomingEvents(client);
+    console.log(`Found ${events.length} registered events\n`);
 
-    if (races.length === 0) {
-      console.log(`No upcoming races found. Exiting.`);
+    if (events.length === 0) {
+      console.log(`No event registrations found. Exiting.`);
       await client.close();
       return;
     }
 
-    // レース開始15分前のレースを特定
-    const targetRaces: RaceInfo[] = [];
-    for (const race of races) {
-      const raceStartTime = new Date(race.start_time_utc);
-      const minutesUntilRace = (raceStartTime.getTime() - now.getTime()) / (60 * 1000);
+    // イベント開始15分前のイベントを特定
+    const targetEvents: EventInfo[] = [];
+    for (const event of events) {
+      const eventStartTime = new Date(event.start_time_utc);
+      const minutesUntilEvent = (eventStartTime.getTime() - now.getTime()) / (60 * 1000);
 
       // 10分〜20分の範囲（余裕を持たせる）
-      if (minutesUntilRace >= 10 && minutesUntilRace <= 20) {
-        targetRaces.push(race);
-        console.log(`🎯 Target race #${race.race_id}: starts at ${race.start_time_utc} (${Math.round(minutesUntilRace)} min)`);
+      if (minutesUntilEvent >= 10 && minutesUntilEvent <= 20) {
+        targetEvents.push(event);
+        console.log(`🎯 Target event #${event.event_id} "${event.event_name}": starts at ${event.start_time_utc} (${Math.round(minutesUntilEvent)} min)`);
       }
     }
 
-    if (targetRaces.length === 0) {
-      console.log(`\nNo races starting in 10-20 minutes. Exiting.`);
+    if (targetEvents.length === 0) {
+      console.log(`\nNo events starting in 10-20 minutes. Exiting.`);
       await client.close();
       return;
     }
 
-    // レースに参加する自分のボットを特定
-    // NOTE: excluded_bots は無視！レース参加ボットは全て処理する
+    // イベントに参加する自分のボットを特定
+    // NOTE: excluded_bots は無視！イベント参加ボットは全て処理する
     console.log(`Fetching all owned bots from API...`);
     const allOwnedBots = await getAllOwnedBots(client);
     console.log(`Found ${allOwnedBots.length} owned bots\n`);
 
     const botsToMaintain = new Set<number>();
 
-    for (const race of targetRaces) {
-      console.log(`Race #${race.race_id}: ${race.participant_bots.length} total participants`);
-      for (const botId of race.participant_bots) {
+    for (const event of targetEvents) {
+      console.log(`Event #${event.event_id} "${event.event_name}": ${event.participant_bots.length} registered bots`);
+      for (const botId of event.participant_bots) {
         if (allOwnedBots.includes(botId)) {
           botsToMaintain.add(botId);
         }
       }
     }
 
-    console.log(`\n🤖 Found ${botsToMaintain.size} bot(s) needing maintenance before races\n`);
+    console.log(`\n🤖 Found ${botsToMaintain.size} bot(s) needing maintenance before events\n`);
 
     if (botsToMaintain.size === 0) {
-      console.log(`No owned bots in upcoming races. Exiting.`);
+      console.log(`No owned bots in upcoming events. Exiting.`);
       await client.close();
       return;
     }

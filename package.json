@@ -15,6 +15,7 @@
     "auto-scavenge": "tsx src/auto-scavenge-loop.ts",
     "auto-race-entry": "tsx src/auto-race-entry.ts",
     "auto-race-maintenance": "tsx src/auto-race-maintenance.ts",
+    "auto-event-registration": "tsx src/auto-event-registration.ts",
     "repair-racing": "tsx repair-racing-bots.ts",
     "charge-racing": "tsx charge-racing-bots.ts"
   },

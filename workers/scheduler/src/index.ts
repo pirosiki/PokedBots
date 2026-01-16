@@ -53,7 +53,7 @@ export default {
       workflowFile = 'auto-scavenge.yml';  // Manages ALL bots (racing + scavenging)
     } else if (event.cron === '30 17,23,5,11 * * *') {
       workflowFile = 'auto-event-registration.yml';  // 30min before races
-    } else if (event.cron === '45 5,11,17,23 * * *' || event.cron === '45 18 * * 5' || event.cron === '45 19 * * 5') {
+    } else if (event.cron === '45 5,11,17,23 * * *' || event.cron === '45 18,19 * * 5') {
       workflowFile = 'auto-race-maintenance.yml';  // 15min before races (including Saturday specials)
     }
 

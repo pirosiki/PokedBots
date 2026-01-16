@@ -6,7 +6,9 @@ compatibility_date = "2024-01-01"
 crons = [
   "*/15 * * * *",            # Auto-scavenge every 15 minutes (manages ALL bots)
   "30 17,23,5,11 * * *",     # Auto-event-registration 30min before races (JST 2:30, 8:30, 14:30, 20:30)
-  "45 5,11,17,23 * * *"      # Auto-race-maintenance 15min before races (JST 2:45, 8:45, 14:45, 20:45)
+  "45 5,11,17,23 * * *",     # Auto-race-maintenance 15min before races (JST 2:45, 8:45, 14:45, 20:45)
+  "45 18 * * 5",             # Auto-race-maintenance for Saturday special (JST Sat 3:45)
+  "45 19 * * 5"              # Auto-race-maintenance for Saturday special (JST Sat 4:45)
 ]
 
 [vars]

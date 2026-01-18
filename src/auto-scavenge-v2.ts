@@ -23,7 +23,7 @@ const TARGET_BOTS = [
 ];
 
 // Thresholds
-const MAX_CHARGING = 5;           // Max bots in ChargingStation
+const MAX_CHARGING = 8;           // Max bots in ChargingStation (efficiency shared above 5)
 const BATTERY_CRITICAL = 75;      // Must stop and wait for charging
 const BATTERY_NEED_CHARGE = 80;   // Should enter ChargingStation
 const BATTERY_FULL = 95;          // Ready to scavenge

@@ -15,9 +15,9 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (14 total - #9581 excluded as not registered)
+// Target bots (15 total)
 const TARGET_BOTS = [
-  5357, 389, 2957, 9716,        // Group A (9581 excluded)
+  9381, 5357, 389, 2957, 9716,  // Group A
   1722, 5597, 3586, 6790, 3606, // Group B
   8255, 8623, 6613, 359, 8603   // Group C
 ];

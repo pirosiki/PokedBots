@@ -50,7 +50,7 @@ export default {
     let workflowFile = '';
 
     if (event.cron === '*/15 * * * *') {
-      workflowFile = 'auto-scavenge.yml';  // Manages ALL bots (racing + scavenging)
+      workflowFile = 'auto-scavenge.yml';  // V2: 15 bots with 5-bot charging limit
     } else if (event.cron === '30 17,23,5,11 * * *') {
       workflowFile = 'auto-event-registration.yml';  // 30min before races
     } else if (event.cron === '45 5,11,17,23 * * *' || event.cron === '45 18,19 * * 5') {

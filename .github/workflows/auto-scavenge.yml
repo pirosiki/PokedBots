@@ -1,4 +1,4 @@
-name: Auto Scavenge Loop
+name: Auto Scavenge V2
 
 on:
   workflow_dispatch: # Triggered by Cloudflare Workers Scheduler
@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run auto-scavenge loop
+      - name: Run auto-scavenge v2
         env:
           MCP_SERVER_URL: https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp
           MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
-        run: npm run auto-scavenge
+        run: npm run auto-scavenge-v2

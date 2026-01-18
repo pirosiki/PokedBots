@@ -219,7 +219,12 @@ async function main() {
 
     // Get all owned bots directly from the API
     console.log(`\n📋 Fetching all owned bots...`);
-    const allBots = await getAllOwnedBots(client);
+    const allOwnedBots = await getAllOwnedBots(client);
+
+    // TEMPORARY: Only process specific bots (remove this filter to process all)
+    const TARGET_BOTS = [9581, 5357, 389, 2957, 9716];
+    const allBots = allOwnedBots.filter(bot => TARGET_BOTS.includes(bot));
+    console.log(`🎯 Filtered to ${allBots.length} target bots: ${TARGET_BOTS.join(', ')}`);
 
     console.log(`\n🔍 Auto-Scavenge Loop Started (PARALLEL MODE)`);
     console.log(`📅 ${new Date().toISOString()}`);

@@ -244,8 +244,8 @@ async function main() {
       console.log(`   Charging slots full (${currentCharging}/${MAX_CHARGING})`);
     }
 
-    // === PHASE 3: Send remaining bots to scavenge ===
-    console.log("\n── Phase 3: Send remaining to scavenge ──");
+    // === PHASE 3: Send high-battery bots to scavenge ===
+    console.log("\n── Phase 3: Send high-battery bots to scavenge ──");
 
     const remainingBots = statuses.filter(b => !processed.has(b.tokenIndex));
 
@@ -253,12 +253,24 @@ async function main() {
       const { tokenIndex, name, battery, zone } = bot;
       const displayName = `#${tokenIndex} ${name}`;
 
-      if (zone !== "ScrapHeaps") {
-        console.log(`⛏️ ${displayName}: Battery ${battery}% → ScrapHeaps`);
-        await moveBot(client, tokenIndex, "ScrapHeaps");
-        actions.push(`${displayName} → ScrapHeaps`);
+      // Only send to ScrapHeaps if battery is 95% or higher
+      if (battery >= BATTERY_FULL) {
+        if (zone !== "ScrapHeaps") {
+          console.log(`⛏️ ${displayName}: Battery ${battery}% → ScrapHeaps`);
+          await moveBot(client, tokenIndex, "ScrapHeaps");
+          actions.push(`${displayName} → ScrapHeaps`);
+        } else {
+          console.log(`⛏️ ${displayName}: Already scavenging (${battery}%)`);
+        }
       } else {
-        console.log(`⛏️ ${displayName}: Already scavenging (${battery}%)`);
+        // Low battery - move to ChargingStation (even if >5, efficiency just drops)
+        if (zone !== "ChargingStation") {
+          console.log(`🔌 ${displayName}: Battery ${battery}% → ChargingStation (waiting)`);
+          await moveBot(client, tokenIndex, "ChargingStation");
+          actions.push(`${displayName} → ChargingStation`);
+        } else {
+          console.log(`🔌 ${displayName}: Charging... (${battery}%)`);
+        }
       }
     }
 

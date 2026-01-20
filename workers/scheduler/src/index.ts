@@ -1,15 +1,13 @@
-/**
- * Cloudflare Workers - GitHub Actions Scheduler
- * Triggers GitHub Actions workflows on a reliable schedule
- *
- * Team Daily Racing System:
- * - Team A: Races at 0:00, 12:00 UTC (9:00, 21:00 JST)
- * - Team B: Races at 6:00, 18:00 UTC (15:00, 3:00 JST)
- *
- * Crons:
- * - */15 * * * *        : Team Daily Maintenance (every 15 min)
- * - 50 5,11,17,23 * * * : Team Daily Pre-Race (10 min before races)
- */
+// Cloudflare Workers - GitHub Actions Scheduler
+// Triggers GitHub Actions workflows on a reliable schedule
+//
+// Team Daily Racing System:
+// - Team A: Races at 0:00, 12:00 UTC (9:00, 21:00 JST)
+// - Team B: Races at 6:00, 18:00 UTC (15:00, 3:00 JST)
+//
+// Crons:
+// - every 15 min       : Team Daily Maintenance
+// - 50 5,11,17,23      : Team Daily Pre-Race (10 min before races)
 
 interface Env {
   GITHUB_TOKEN: string;

@@ -1,10 +1,20 @@
 /**
- * Auto-Scavenge V2 (Always keep 5 bots charging)
+ * Auto-Scavenge V2
  *
- * Manages 15 bots with efficient charging rotation:
- * - Always maintain 5 bots in ChargingStation (100% efficiency)
- * - When charged (95%+), move to ScrapHeaps and fill slot with lowest battery bot
- * - Never let battery drop below 75%
+ * ┌─────────────────────────────────────────────────────────┐
+ * │                      判定フロー                          │
+ * ├─────────────────────────────────────────────────────────┤
+ * │  Cond < 70% ─────────────────────────────→ RepairBay   │
+ * │  充電中 & Battery ≥ 95% ─────────────────→ ScrapHeaps  │
+ * │  充電中 ─────────────────────────────────→ 継続        │
+ * │  修理中 & Cond ≥ 95% & Battery ≥ 95% ───→ ScrapHeaps  │
+ * │  修理中 & Cond ≥ 95% & Battery < 95% ───→ Charging    │
+ * │  修理中 ─────────────────────────────────→ 継続        │
+ * │  スカベンジ中 & Battery < 80% ──────────→ Charging    │
+ * │  スカベンジ中 ───────────────────────────→ 継続        │
+ * │  Battery ≥ 95% ──────────────────────────→ ScrapHeaps  │
+ * │  それ以外 ───────────────────────────────→ Charging    │
+ * └─────────────────────────────────────────────────────────┘
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -23,9 +33,11 @@ const TARGET_BOTS = [
 ];
 
 // Thresholds
-const MAX_CHARGING = 5;           // Always keep 5 bots charging (100% efficiency)
-const BATTERY_FULL = 95;          // Ready to scavenge
-const CONDITION_LOW = 80;         // Need repair
+const MAX_CHARGING = 5;           // Priority charging slots (100% efficiency)
+const BATTERY_FULL = 95;          // Can start scavenging
+const BATTERY_LOW = 80;           // Must return to charge
+const CONDITION_FULL = 95;        // Repair complete
+const CONDITION_LOW = 70;         // Need repair
 
 interface BotStatus {
   tokenIndex: number;
@@ -75,7 +87,7 @@ async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number
     if (result.isError) {
       const errorMsg = result.content?.[0]?.text || "Unknown error";
       if (errorMsg.includes("No active mission")) {
-        return true; // Already not scavenging
+        return true;
       }
       console.error(`  ✗ Failed to complete for bot #${tokenIndex}: ${errorMsg}`);
       return false;
@@ -93,7 +105,7 @@ async function startScavenging(client: PokedRaceMCPClient, tokenIndex: number, z
     if (result.isError) {
       const errorMsg = result.content?.[0]?.text || "Unknown error";
       if (errorMsg.includes("already on a scavenging mission")) {
-        return true; // Already scavenging
+        return true;
       }
       console.error(`  ✗ Failed to start for bot #${tokenIndex}: ${errorMsg}`);
       return false;
@@ -118,32 +130,31 @@ async function main() {
     await client.connect(SERVER_URL, API_KEY);
 
     console.log("\n🤖 ========================================");
-    console.log("🤖  AUTO-SCAVENGE V2 (Always 5 charging)");
+    console.log("🤖  AUTO-SCAVENGE V2");
     console.log("🤖 ========================================\n");
     console.log(`📅 ${new Date().toISOString()}`);
     console.log(`🎯 Managing ${TARGET_BOTS.length} bots\n`);
+    console.log(`📊 Thresholds: Battery ${BATTERY_LOW}%-${BATTERY_FULL}%, Condition ${CONDITION_LOW}%-${CONDITION_FULL}%\n`);
 
     // Get all bot statuses
     console.log("📊 Fetching bot statuses...");
     const statuses = await getBotStatuses(client);
     console.log(`✅ Got status for ${statuses.length}/${TARGET_BOTS.length} bots\n`);
 
-    // Categorize bots
+    // Categorize current state
     const chargingBots = statuses.filter(s => s.zone === "ChargingStation");
     const repairingBots = statuses.filter(s => s.zone === "RepairBay");
     const scavengingBots = statuses.filter(s => s.zone === "ScrapHeaps");
     const idleBots = statuses.filter(s => s.zone === null);
 
     console.log("📈 Current Status:");
-    console.log(`   Charging: ${chargingBots.length}/${MAX_CHARGING}`);
+    console.log(`   Charging: ${chargingBots.length}`);
     console.log(`   Repairing: ${repairingBots.length}`);
     console.log(`   Scavenging: ${scavengingBots.length}`);
     console.log(`   Idle: ${idleBots.length}\n`);
 
-    // Sort by battery (lowest first)
+    // Display all bots sorted by battery
     const sortedByBattery = [...statuses].sort((a, b) => a.battery - b.battery);
-
-    // Display all bots
     console.log("🔋 Bot Status (sorted by battery):");
     for (const bot of sortedByBattery) {
       const zoneIcon = bot.zone === "ChargingStation" ? "🔌" :
@@ -154,124 +165,88 @@ async function main() {
     console.log("");
 
     const actions: string[] = [];
-    let currentCharging = chargingBots.length;
 
-    // Track which bots are now charging (for slot filling later)
-    const nowCharging = new Set(chargingBots.map(b => b.tokenIndex));
-    const processed = new Set<number>();
-
-    // === PHASE 1: Handle repairs and charged bots ===
-    console.log("── Phase 1: Handle repairs and charged bots ──");
+    // Process each bot according to the flow
+    console.log("── Processing bots ──");
 
     for (const bot of statuses) {
       const { tokenIndex, name, battery, condition, zone } = bot;
       const displayName = `#${tokenIndex} ${name}`;
 
-      // Condition too low → RepairBay
-      if (condition < CONDITION_LOW && zone !== "RepairBay") {
-        console.log(`🔧 ${displayName}: Condition ${condition}% low → RepairBay`);
-        await moveBot(client, tokenIndex, "RepairBay");
-        if (zone === "ChargingStation") {
-          currentCharging--;
-          nowCharging.delete(tokenIndex);
-        }
-        actions.push(`${displayName} → RepairBay`);
-        processed.add(tokenIndex);
-        continue;
-      }
-
-      // Currently charging and full → ScrapHeaps
-      if (zone === "ChargingStation" && battery >= BATTERY_FULL) {
-        console.log(`⛏️ ${displayName}: Charged to ${battery}%! → ScrapHeaps`);
-        await moveBot(client, tokenIndex, "ScrapHeaps");
-        currentCharging--;
-        nowCharging.delete(tokenIndex);
-        actions.push(`${displayName} → ScrapHeaps (charged)`);
-        processed.add(tokenIndex);
-        continue;
-      }
-
-      // Currently charging but not full → stay
-      if (zone === "ChargingStation") {
-        console.log(`🔌 ${displayName}: Charging... (${battery}%)`);
-        processed.add(tokenIndex);
-        continue;
-      }
-
-      // Currently repairing
-      if (zone === "RepairBay") {
-        if (condition >= BATTERY_FULL) {
-          // Repaired! Will be handled in phase 2
-          console.log(`✅ ${displayName}: Repair complete (${condition}%)`);
+      // 1. Condition < 70% → RepairBay
+      if (condition < CONDITION_LOW) {
+        if (zone !== "RepairBay") {
+          console.log(`🔧 ${displayName}: Condition ${condition}% < ${CONDITION_LOW}% → RepairBay`);
+          await moveBot(client, tokenIndex, "RepairBay");
+          actions.push(`${displayName} → RepairBay`);
         } else {
           console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
-          processed.add(tokenIndex);
         }
         continue;
       }
-    }
 
-    // === PHASE 2: Fill charging slots to maintain 5 ===
-    console.log("\n── Phase 2: Fill charging slots ──");
-
-    // Get candidates for charging (not already charging, not repairing, battery < 95%)
-    const chargeCandidates = statuses
-      .filter(b => !processed.has(b.tokenIndex))
-      .filter(b => !nowCharging.has(b.tokenIndex))
-      .filter(b => b.zone !== "RepairBay" || b.condition >= BATTERY_FULL) // Allow repaired bots
-      .filter(b => b.battery < BATTERY_FULL)
-      .sort((a, b) => a.battery - b.battery); // Lowest battery first
-
-    const slotsToFill = MAX_CHARGING - currentCharging;
-
-    if (slotsToFill > 0 && chargeCandidates.length > 0) {
-      console.log(`   Need to fill ${slotsToFill} charging slot(s)`);
-
-      for (let i = 0; i < Math.min(slotsToFill, chargeCandidates.length); i++) {
-        const bot = chargeCandidates[i];
-        const displayName = `#${bot.tokenIndex} ${bot.name}`;
-
-        console.log(`🔌 ${displayName}: Battery ${bot.battery}% → ChargingStation`);
-        await moveBot(client, bot.tokenIndex, "ChargingStation");
-        currentCharging++;
-        nowCharging.add(bot.tokenIndex);
-        actions.push(`${displayName} → ChargingStation`);
-        processed.add(bot.tokenIndex);
+      // 2. Charging & Battery ≥ 95% → ScrapHeaps
+      if (zone === "ChargingStation" && battery >= BATTERY_FULL) {
+        console.log(`⛏️ ${displayName}: Charged to ${battery}% → ScrapHeaps`);
+        await moveBot(client, tokenIndex, "ScrapHeaps");
+        actions.push(`${displayName} → ScrapHeaps (charged)`);
+        continue;
       }
-    } else if (slotsToFill > 0) {
-      console.log(`   ${slotsToFill} slot(s) available but all bots are fully charged!`);
-    } else {
-      console.log(`   Charging slots full (${currentCharging}/${MAX_CHARGING})`);
-    }
 
-    // === PHASE 3: Send high-battery bots to scavenge ===
-    console.log("\n── Phase 3: Send high-battery bots to scavenge ──");
+      // 3. Charging → Continue
+      if (zone === "ChargingStation") {
+        console.log(`🔌 ${displayName}: Charging... (${battery}%)`);
+        continue;
+      }
 
-    const remainingBots = statuses.filter(b => !processed.has(b.tokenIndex));
+      // 4. Repairing & Cond ≥ 95% & Battery ≥ 95% → ScrapHeaps
+      if (zone === "RepairBay" && condition >= CONDITION_FULL && battery >= BATTERY_FULL) {
+        console.log(`⛏️ ${displayName}: Repaired & charged → ScrapHeaps`);
+        await moveBot(client, tokenIndex, "ScrapHeaps");
+        actions.push(`${displayName} → ScrapHeaps (repaired)`);
+        continue;
+      }
 
-    for (const bot of remainingBots) {
-      const { tokenIndex, name, battery, zone } = bot;
-      const displayName = `#${tokenIndex} ${name}`;
+      // 5. Repairing & Cond ≥ 95% & Battery < 95% → Charging
+      if (zone === "RepairBay" && condition >= CONDITION_FULL && battery < BATTERY_FULL) {
+        console.log(`🔌 ${displayName}: Repaired, battery ${battery}% → ChargingStation`);
+        await moveBot(client, tokenIndex, "ChargingStation");
+        actions.push(`${displayName} → ChargingStation (repaired)`);
+        continue;
+      }
 
-      // Only send to ScrapHeaps if battery is 95% or higher
+      // 6. Repairing → Continue
+      if (zone === "RepairBay") {
+        console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
+        continue;
+      }
+
+      // 7. Scavenging & Battery < 80% → Charging
+      if (zone === "ScrapHeaps" && battery < BATTERY_LOW) {
+        console.log(`🔌 ${displayName}: Battery ${battery}% < ${BATTERY_LOW}% → ChargingStation`);
+        await moveBot(client, tokenIndex, "ChargingStation");
+        actions.push(`${displayName} → ChargingStation (low battery)`);
+        continue;
+      }
+
+      // 8. Scavenging → Continue
+      if (zone === "ScrapHeaps") {
+        console.log(`⛏️ ${displayName}: Scavenging... (${battery}%)`);
+        continue;
+      }
+
+      // 9. Battery ≥ 95% → ScrapHeaps
       if (battery >= BATTERY_FULL) {
-        if (zone !== "ScrapHeaps") {
-          console.log(`⛏️ ${displayName}: Battery ${battery}% → ScrapHeaps`);
-          await moveBot(client, tokenIndex, "ScrapHeaps");
-          actions.push(`${displayName} → ScrapHeaps`);
-        } else {
-          console.log(`⛏️ ${displayName}: Already scavenging (${battery}%)`);
-        }
-      } else {
-        // Low battery - move to ChargingStation (even if >5, efficiency just drops)
-        if (zone !== "ChargingStation") {
-          console.log(`🔌 ${displayName}: Battery ${battery}% → ChargingStation (waiting)`);
-          await moveBot(client, tokenIndex, "ChargingStation");
-          actions.push(`${displayName} → ChargingStation`);
-        } else {
-          console.log(`🔌 ${displayName}: Charging... (${battery}%)`);
-        }
+        console.log(`⛏️ ${displayName}: Battery ${battery}% → ScrapHeaps`);
+        await moveBot(client, tokenIndex, "ScrapHeaps");
+        actions.push(`${displayName} → ScrapHeaps`);
+        continue;
       }
+
+      // 10. Otherwise → Charging
+      console.log(`🔌 ${displayName}: Battery ${battery}% → ChargingStation`);
+      await moveBot(client, tokenIndex, "ChargingStation");
+      actions.push(`${displayName} → ChargingStation`);
     }
 
     // Summary
@@ -285,7 +260,13 @@ async function main() {
       }
     }
 
-    console.log(`\n✅ Complete - Charging: ${currentCharging}/${MAX_CHARGING}`);
+    // Final count
+    const finalStatuses = await getBotStatuses(client);
+    const finalCharging = finalStatuses.filter(s => s.zone === "ChargingStation").length;
+    const finalRepairing = finalStatuses.filter(s => s.zone === "RepairBay").length;
+    const finalScavenging = finalStatuses.filter(s => s.zone === "ScrapHeaps").length;
+
+    console.log(`\n✅ Complete - Charging: ${finalCharging}, Repairing: ${finalRepairing}, Scavenging: ${finalScavenging}`);
     await client.close();
   } catch (error) {
     console.error("\n❌ Error:", error);

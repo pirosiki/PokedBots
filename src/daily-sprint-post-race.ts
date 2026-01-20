@@ -1,9 +1,10 @@
 /**
  * Daily Sprint Post-Race Maintenance
  *
- * レース終了30分後に実行:
- * 1. コンディション < 70% → RepairBayへ（無料）
- * 2. 全員 → ChargingStationへ（無料）
+ * 15分毎に実行（レース30分後から次のレースまで）:
+ * 1. コンディション < 70% → RepairBay（無料）
+ * 2. バッテリー < 100% → ChargingStation（無料）
+ * 3. バッテリー100% → Retrieve（待機状態へ）
  *
  * 対象: Daily Sprint固定メンバー25体
  */
@@ -147,41 +148,49 @@ async function main() {
     // 状態表示
     console.log("\n📊 Current Status:");
     for (const bot of bots) {
-      const icon = bot.condition < CONDITION_THRESHOLD ? "⚠️" : "✓";
-      console.log(`   ${icon} ${bot.name}: Battery=${bot.battery}%, Condition=${bot.condition}%, Zone=${bot.zone || "None"}`);
+      const condIcon = bot.condition < CONDITION_THRESHOLD ? "🔧" :
+                       bot.battery < 100 ? "🔋" : "✅";
+      console.log(`   ${condIcon} ${bot.name}: Battery=${bot.battery}%, Condition=${bot.condition}%, Zone=${bot.zone || "None"}`);
     }
 
     const actions: string[] = [];
 
-    // Phase 1: コンディション < 70% → RepairBay
-    const needRepair = bots.filter(b => b.condition < CONDITION_THRESHOLD);
-    if (needRepair.length > 0) {
-      console.log(`\n🔧 Phase 1: Sending ${needRepair.length} bot(s) to RepairBay...`);
-      for (const bot of needRepair) {
+    // 処理
+    for (const bot of bots) {
+      // 1. コンディション < 70% → RepairBay
+      if (bot.condition < CONDITION_THRESHOLD) {
         if (bot.zone !== "RepairBay") {
-          console.log(`   → ${bot.name} (${bot.condition}%)`);
+          console.log(`\n🔧 ${bot.name}: Condition ${bot.condition}% → RepairBay`);
           await moveBot(client, bot.tokenIndex, "RepairBay");
           actions.push(`${bot.name} → RepairBay`);
         }
+        continue;
       }
-    } else {
-      console.log("\n✓ Phase 1: All bots have condition >= 70%");
-    }
 
-    // Phase 2: 残り全員 → ChargingStation
-    const needCharge = bots.filter(b => b.condition >= CONDITION_THRESHOLD);
-    if (needCharge.length > 0) {
-      console.log(`\n🔌 Phase 2: Sending ${needCharge.length} bot(s) to ChargingStation...`);
-      for (const bot of needCharge) {
-        if (bot.zone !== "ChargingStation") {
-          console.log(`   → ${bot.name} (${bot.battery}%)`);
-          await moveBot(client, bot.tokenIndex, "ChargingStation");
-          actions.push(`${bot.name} → ChargingStation`);
+      // 2. バッテリー100% → Retrieve（待機状態へ）
+      if (bot.battery >= 100) {
+        if (bot.zone !== null) {
+          console.log(`\n✅ ${bot.name}: Battery 100% → Retrieve (standby)`);
+          await completeScavenging(client, bot.tokenIndex);
+          actions.push(`${bot.name} → Standby`);
         }
+        continue;
+      }
+
+      // 3. バッテリー < 100% → ChargingStation
+      if (bot.zone !== "ChargingStation") {
+        console.log(`\n🔋 ${bot.name}: Battery ${bot.battery}% → ChargingStation`);
+        await moveBot(client, bot.tokenIndex, "ChargingStation");
+        actions.push(`${bot.name} → ChargingStation`);
       }
     }
 
     // Summary
+    const finalBots = await getTargetBots(client);
+    const charging = finalBots.filter(b => b.zone === "ChargingStation").length;
+    const repairing = finalBots.filter(b => b.zone === "RepairBay").length;
+    const standby = finalBots.filter(b => b.zone === null).length;
+
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("📋 Actions taken:");
     if (actions.length === 0) {
@@ -193,8 +202,9 @@ async function main() {
     }
 
     console.log(`\n✅ Post-race maintenance complete`);
-    console.log(`   RepairBay: ${needRepair.length}`);
-    console.log(`   ChargingStation: ${needCharge.length}`);
+    console.log(`   ChargingStation: ${charging}`);
+    console.log(`   RepairBay: ${repairing}`);
+    console.log(`   Standby: ${standby}`);
 
     await client.close();
   } catch (error) {

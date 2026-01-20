@@ -53,7 +53,7 @@ export default {
       workflowFile = 'auto-scavenge.yml';  // V2: 15 bots scavenging
     } else if (event.cron === '30 5,11,17,23 * * *') {
       workflowFile = 'register-daily-sprint.yml';  // Daily Sprint: 30min before
-    } else if (event.cron === '5,20,35,50 * * * *') {
+    } else if (event.cron === '5-59/15 * * * *') {
       workflowFile = 'daily-sprint-post-race.yml';  // Daily Sprint: every 15min (charge & standby)
     } else if (event.cron === '45 5,11,17,23 * * *') {
       workflowFile = 'daily-sprint-pre-race.yml';  // Daily Sprint: 15min before (Perfect Tune)

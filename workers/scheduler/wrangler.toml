@@ -4,11 +4,15 @@ compatibility_date = "2024-01-01"
 
 [triggers]
 crons = [
-  "*/15 * * * *",            # Auto-scavenge-v2 every 15 minutes (at :00, :15, :30, :45)
-  "30 5,11,17,23 * * *",     # Daily Sprint Register - 30min before (JST 8:30, 14:30, 20:30, 2:30)
-  "5-59/15 * * * *",         # Daily Sprint Post-Race - every 15min offset (at :05, :20, :35, :50)
-  "45 5,11,17,23 * * *"      # Daily Sprint Pre-Race - 15min before (JST 8:45, 14:45, 20:45, 2:45)
+  "*/15 * * * *",            # Team Daily Maintenance - every 15 min (both teams)
+  "50 5,11,17,23 * * *"      # Team Daily Pre-Race - 10min before races (paid repair)
 ]
+
+# Note: Old daily sprint crons replaced by new team system
+# Old crons were:
+#   "30 5,11,17,23 * * *"  - Daily Sprint Register
+#   "5-59/15 * * * *"      - Daily Sprint Post-Race
+#   "45 5,11,17,23 * * *"  - Daily Sprint Pre-Race
 
 [vars]
 GITHUB_OWNER = "pirosiki"

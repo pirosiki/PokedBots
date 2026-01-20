@@ -1,0 +1,97 @@
+================================================================================
+                         TEAM DIVISION (46 bots)
+                         Generated: 2026-01-21
+================================================================================
+
+================================================================================
+TEAM A (23 bots)
+================================================================================
+ID      Name            Class       Rating  Terrain
+--------------------------------------------------------------
+433     Hachiware       Silent      54      ScrapHeaps
+5143    ハチワレ        Silent      54      ScrapHeaps
+5136    うさぎ          Silent      53      ScrapHeaps
+1315    StraySheep      Elite       45      WastelandSand
+9943    Ged             Elite       45      MetalRoads
+1203    SonicBlue       Elite       44      MetalRoads
+2630    Noboru          Elite       44      ScrapHeaps
+7098    Wasabi          Elite       41      ScrapHeaps
+7486    Bot #7486       Raider      39      MetalRoads
+8313    Bot #8313       Raider      38      MetalRoads
+708     PurpleOne       Raider      36      WastelandSand
+1170    ちいかわ        Raider      34      ScrapHeaps
+1209    Char            Raider      34      MetalRoads
+8895    Papuwa          Raider      34      WastelandSand
+9567    タンシチ        Raider      34      MetalRoads
+5028    東西線          Raider      33      ScrapHeaps
+2475    クラムボン      Raider      31      WastelandSand
+7522    Guevara         Raider      30      WastelandSand
+1003    Bot #1003       Junker      25      MetalRoads
+3406    Chiikawa        Junker      24      MetalRoads
+8636    ねじまき鳥      Junker      24      MetalRoads
+8868    Bot #8868       Junker      21      MetalRoads
+9755    Bot #9755       Junker      20      ScrapHeaps
+
+Team A Stats:
+  Total Rating: 837 (Avg: 36.39)
+  Classes:  Silent 3, Elite 5, Raider 10, Junker 5
+  Terrains: ScrapHeaps 8, MetalRoads 10, WastelandSand 5
+
+Team A IDs: 433, 5143, 5136, 1315, 9943, 1203, 2630, 7098, 7486, 8313, 708, 1170, 1209, 8895, 9567, 5028, 2475, 7522, 1003, 3406, 8636, 8868, 9755
+
+
+================================================================================
+TEAM B (23 bots)
+================================================================================
+ID      Name            Class       Rating  Terrain
+--------------------------------------------------------------
+2669    Bach            Silent      54      ScrapHeaps
+5677    Usagi           Silent      54      MetalRoads
+8288    らっこ          Silent      54      ScrapHeaps
+6152    TAGGR           Elite       45      ScrapHeaps
+820     Nadia           Elite       44      MetalRoads
+2441    neopirosiki     Elite       44      ScrapHeaps
+2632    Nora            Elite       44      WastelandSand
+1866    pirosiki        Elite       40      ScrapHeaps
+5414    Bot #5414       Raider      38      MetalRoads
+9888    GoldMan         Raider      38      MetalRoads
+2985    Bot #2985       Raider      36      ScrapHeaps
+758     Motoko          Raider      34      WastelandSand
+3535    G-Max           Raider      34      MetalRoads
+9035    ももんが        Raider      34      ScrapHeaps
+9048    Matai           Raider      34      WastelandSand
+7680    Kafka           Raider      32      WastelandSand
+8626    Bot #8626       Raider      31      MetalRoads
+5943    Bot #5943       Junker      26      ScrapHeaps
+7432    Bot #7432       Junker      26      WastelandSand
+406     Noir            Junker      24      WastelandSand
+5400    仙台牛タン      Junker      24      WastelandSand
+631     厚切り牛タン    Junker      22      ScrapHeaps
+2934    Bot #2934       Junker      21      ScrapHeaps
+
+Team B Stats:
+  Total Rating: 833 (Avg: 36.22)
+  Classes:  Silent 3, Elite 5, Raider 9, Junker 6
+  Terrains: ScrapHeaps 10, MetalRoads 6, WastelandSand 7
+
+Team B IDs: 2669, 5677, 8288, 6152, 820, 2441, 2632, 1866, 5414, 9888, 2985, 758, 3535, 9035, 9048, 7680, 8626, 5943, 7432, 406, 5400, 631, 2934
+
+
+================================================================================
+BALANCE SUMMARY
+================================================================================
+                Team A      Team B      Diff
+Total Rating:   837         833         4
+Avg Rating:     36.39       36.22       0.17
+
+Class Distribution:
+  Silent:       3           3           0
+  Elite:        5           5           0
+  Raider:       10          9           1
+  Junker:       5           6           1
+
+Terrain Distribution:
+  ScrapHeaps:   8           10          2
+  MetalRoads:   10          6           4
+  WastelandSand:5           7           2
+================================================================================

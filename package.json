@@ -17,6 +17,8 @@
     "auto-race-maintenance": "tsx src/auto-race-maintenance.ts",
     "auto-event-registration": "tsx src/auto-event-registration.ts",
     "register-daily-sprint": "tsx src/register-daily-sprint.ts",
+    "daily-sprint-post-race": "tsx src/daily-sprint-post-race.ts",
+    "daily-sprint-pre-race": "tsx src/daily-sprint-pre-race.ts",
     "repair-racing": "tsx repair-racing-bots.ts",
     "charge-racing": "tsx charge-racing-bots.ts"
   },

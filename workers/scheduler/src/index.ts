@@ -50,11 +50,13 @@ export default {
     let workflowFile = '';
 
     if (event.cron === '*/15 * * * *') {
-      workflowFile = 'auto-scavenge.yml';  // V2: 15 bots with 5-bot charging limit
-    } else if (event.cron === '30 17,23,5,11 * * *') {
-      workflowFile = 'auto-event-registration.yml';  // 30min before races
-    } else if (event.cron === '45 5,11,17,23 * * *' || event.cron === '45 18,19 * * 5') {
-      workflowFile = 'auto-race-maintenance.yml';  // 15min before races (including Saturday specials)
+      workflowFile = 'auto-scavenge.yml';  // V2: 15 bots scavenging
+    } else if (event.cron === '30 5,11,17,23 * * *') {
+      workflowFile = 'register-daily-sprint.yml';  // Daily Sprint: 30min before
+    } else if (event.cron === '30 0,6,12,18 * * *') {
+      workflowFile = 'daily-sprint-post-race.yml';  // Daily Sprint: 30min after
+    } else if (event.cron === '45 5,11,17,23 * * *') {
+      workflowFile = 'daily-sprint-pre-race.yml';  // Daily Sprint: 15min before (Perfect Tune)
     }
 
     if (workflowFile) {

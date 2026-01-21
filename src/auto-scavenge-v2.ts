@@ -5,8 +5,8 @@
  * │                         判定フロー                                │
  * ├──────────────────────────────────────────────────────────────────┤
  * │  Cond < 70% & RepairBay空きあり ─────────────→ RepairBay        │
- * │  Cond < 70% & RepairBay満 & Bat≥95 & Cond≥50 → ScrapHeaps       │
- * │  Cond < 70% & RepairBay満 ───────────────────→ Charging(待機)   │
+ * │  Cond < 70% & RepairBay満 & Bat ≥ 95% ───────→ ScrapHeaps       │
+ * │  Cond < 70% & RepairBay満 & Bat < 95% ───────→ Charging→後で稼働│
  * │  充電中 & Battery ≥ 95% ─────────────────────→ ScrapHeaps       │
  * │  充電中 ─────────────────────────────────────→ 継続             │
  * │  修理中 & Cond ≥ 95% & Battery ≥ 95% ────────→ ScrapHeaps       │
@@ -47,7 +47,6 @@ const BATTERY_FULL = 95;          // Can start scavenging
 const BATTERY_LOW = 80;           // Must return to charge
 const CONDITION_FULL = 95;        // Repair complete
 const CONDITION_LOW = 70;         // Need repair
-const CONDITION_MIN_SCAVENGE = 50; // Min condition to scavenge when RepairBay full
 
 interface BotStatus {
   tokenIndex: number;
@@ -200,16 +199,16 @@ async function main() {
           await moveBot(client, tokenIndex, "RepairBay");
           actions.push(`${displayName} → RepairBay`);
           repairBayCount++;
-        } else if (battery >= BATTERY_FULL && condition >= CONDITION_MIN_SCAVENGE) {
-          // RepairBay full but can still scavenge
-          console.log(`⛏️ ${displayName}: RepairBay full, Cond ${condition}% ≥ ${CONDITION_MIN_SCAVENGE}% → ScrapHeaps`);
+        } else if (battery >= BATTERY_FULL) {
+          // RepairBay full but battery full - go scavenge (don't block ChargingStation)
+          console.log(`⛏️ ${displayName}: RepairBay full, Battery ${battery}% → ScrapHeaps`);
           await moveBot(client, tokenIndex, "ScrapHeaps");
           actions.push(`${displayName} → ScrapHeaps (RepairBay full)`);
         } else {
-          // RepairBay full, wait at ChargingStation
-          console.log(`🔌 ${displayName}: RepairBay full, waiting at ChargingStation`);
+          // RepairBay full, charge first then scavenge
+          console.log(`🔌 ${displayName}: RepairBay full, Battery ${battery}% → ChargingStation`);
           await moveBot(client, tokenIndex, "ChargingStation");
-          actions.push(`${displayName} → ChargingStation (waiting for RepairBay)`);
+          actions.push(`${displayName} → ChargingStation (charge then scavenge)`);
         }
         continue;
       }

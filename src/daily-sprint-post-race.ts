@@ -7,6 +7,8 @@
  * 3. バッテリー100% → Retrieve（待機状態へ）
  *
  * 対象: Daily Sprint固定メンバー25体
+ *
+ * 高速化: 並列実行 + 失敗時は個別リトライ
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -46,9 +48,10 @@ async function getTargetBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
   }
 
   const responseText = result.content[0].text;
-  const bots: BotInfo[] = [];
-
   const botBlocks = responseText.split(/(?=🏎️ PokedBot #)/g).filter((b: string) => b.includes('PokedBot #'));
+
+  // 対象ボットのtokenIndexとnameを抽出
+  const targetBotBasics: { tokenIndex: number; name: string }[] = [];
 
   for (const block of botBlocks) {
     const tokenMatch = block.match(/🏎️ PokedBot #(\d+)(?: "([^"]+)")?/);
@@ -64,28 +67,42 @@ async function getTargetBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
       targetName.includes(name)
     );
 
-    if (!isTarget) continue;
-
-    // 詳細を取得
-    const detailResult = await client.callTool("garage_get_robot_details", { token_index: tokenIndex });
-    if (!detailResult || !detailResult.content || !detailResult.content[0] || !detailResult.content[0].text) {
-      continue;
+    if (isTarget) {
+      targetBotBasics.push({ tokenIndex, name });
     }
-
-    const data = JSON.parse(detailResult.content[0].text);
-    const battery = data.condition?.battery || 0;
-    const condition = data.condition?.condition || 0;
-
-    let zone: string | null = null;
-    if (data.active_scavenging &&
-        data.active_scavenging.status &&
-        typeof data.active_scavenging.status === "string" &&
-        data.active_scavenging.status.includes("Active")) {
-      zone = data.active_scavenging.zone || null;
-    }
-
-    bots.push({ tokenIndex, name, battery, condition, zone });
   }
+
+  // 並列で詳細を取得
+  console.log(`📡 Fetching details for ${targetBotBasics.length} bots in parallel...`);
+  const detailPromises = targetBotBasics.map(async (bot) => {
+    try {
+      const detailResult = await client.callTool("garage_get_robot_details", { token_index: bot.tokenIndex });
+      if (!detailResult || !detailResult.content || !detailResult.content[0] || !detailResult.content[0].text) {
+        return null;
+      }
+
+      const data = JSON.parse(detailResult.content[0].text);
+      const battery = data.condition?.battery || 0;
+      const condition = data.condition?.condition || 0;
+
+      let zone: string | null = null;
+      if (data.active_scavenging &&
+          data.active_scavenging.status &&
+          typeof data.active_scavenging.status === "string" &&
+          data.active_scavenging.status.includes("Active")) {
+        zone = data.active_scavenging.zone || null;
+      }
+
+      return { tokenIndex: bot.tokenIndex, name: bot.name, battery, condition, zone } as BotInfo;
+    } catch {
+      return null;
+    }
+  });
+
+  const results = await Promise.allSettled(detailPromises);
+  const bots: BotInfo[] = results
+    .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
+    .map(r => r.value!);
 
   console.log(`✅ Found ${bots.length}/${TARGET_NAMES.length} target bots`);
   return bots;
@@ -155,33 +172,95 @@ async function main() {
 
     const actions: string[] = [];
 
-    // 処理
-    for (const bot of bots) {
-      // 1. コンディション < 70% → RepairBay
-      if (bot.condition < CONDITION_THRESHOLD) {
-        if (bot.zone !== "RepairBay") {
-          console.log(`\n🔧 ${bot.name}: Condition ${bot.condition}% → RepairBay`);
+    // 各ボットの処理内容を決定
+    interface BotTask {
+      bot: BotInfo;
+      action: "repair" | "standby" | "charge" | "none";
+    }
+
+    const tasks: BotTask[] = bots.map(bot => {
+      if (bot.condition < CONDITION_THRESHOLD && bot.zone !== "RepairBay") {
+        return { bot, action: "repair" };
+      }
+      if (bot.battery >= 100 && bot.zone !== null) {
+        return { bot, action: "standby" };
+      }
+      if (bot.battery < 100 && bot.zone !== "ChargingStation") {
+        return { bot, action: "charge" };
+      }
+      return { bot, action: "none" };
+    });
+
+    const activeTasks = tasks.filter(t => t.action !== "none");
+    console.log(`\n⚡ Processing ${activeTasks.length} bots in parallel...`);
+
+    // 並列実行
+    const taskPromises = activeTasks.map(async (task): Promise<{ task: BotTask; success: boolean }> => {
+      const { bot, action } = task;
+      try {
+        if (action === "repair") {
           await moveBot(client, bot.tokenIndex, "RepairBay");
-          actions.push(`${bot.name} → RepairBay`);
-        }
-        continue;
-      }
-
-      // 2. バッテリー100% → Retrieve（待機状態へ）
-      if (bot.battery >= 100) {
-        if (bot.zone !== null) {
-          console.log(`\n✅ ${bot.name}: Battery 100% → Retrieve (standby)`);
+        } else if (action === "standby") {
           await completeScavenging(client, bot.tokenIndex);
-          actions.push(`${bot.name} → Standby`);
+        } else if (action === "charge") {
+          await moveBot(client, bot.tokenIndex, "ChargingStation");
         }
-        continue;
+        return { task, success: true };
+      } catch {
+        return { task, success: false };
       }
+    });
 
-      // 3. バッテリー < 100% → ChargingStation
-      if (bot.zone !== "ChargingStation") {
-        console.log(`\n🔋 ${bot.name}: Battery ${bot.battery}% → ChargingStation`);
-        await moveBot(client, bot.tokenIndex, "ChargingStation");
-        actions.push(`${bot.name} → ChargingStation`);
+    const results = await Promise.allSettled(taskPromises);
+
+    // 結果を集計
+    const succeeded: BotTask[] = [];
+    const failed: BotTask[] = [];
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.success) {
+          succeeded.push(result.value.task);
+        } else {
+          failed.push(result.value.task);
+        }
+      } else {
+        // Promise自体が失敗した場合
+        failed.push(activeTasks[results.indexOf(result)]);
+      }
+    }
+
+    // 成功したアクションをログ
+    for (const task of succeeded) {
+      const actionLabel = task.action === "repair" ? "RepairBay" :
+                          task.action === "standby" ? "Standby" : "ChargingStation";
+      console.log(`   ✅ ${task.bot.name} → ${actionLabel}`);
+      actions.push(`${task.bot.name} → ${actionLabel}`);
+    }
+
+    // 失敗したボットを個別にリトライ
+    if (failed.length > 0) {
+      console.log(`\n⚠️  ${failed.length} failed, retrying sequentially...`);
+      for (const task of failed) {
+        const { bot, action } = task;
+        try {
+          console.log(`   🔄 Retrying ${bot.name}...`);
+          if (action === "repair") {
+            await moveBot(client, bot.tokenIndex, "RepairBay");
+            console.log(`   ✅ ${bot.name} → RepairBay`);
+            actions.push(`${bot.name} → RepairBay (retry)`);
+          } else if (action === "standby") {
+            await completeScavenging(client, bot.tokenIndex);
+            console.log(`   ✅ ${bot.name} → Standby`);
+            actions.push(`${bot.name} → Standby (retry)`);
+          } else if (action === "charge") {
+            await moveBot(client, bot.tokenIndex, "ChargingStation");
+            console.log(`   ✅ ${bot.name} → ChargingStation`);
+            actions.push(`${bot.name} → ChargingStation (retry)`);
+          }
+        } catch (e) {
+          console.log(`   ❌ ${bot.name} failed again: ${e}`);
+        }
       }
     }
 

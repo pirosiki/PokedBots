@@ -21,8 +21,7 @@ const DAILY_SPRINT_NAMES = [
   "Noir", "Chiikawa", "仙台牛タン", "ねじまき鳥", "厚切り牛タン"
 ];
 
-// 除外するボット（スカベンジング: IDベース）
-const SCAVENGING_BOTS = [2669, 5143, 2630, 2441, 9381, 5357, 389, 2957, 2740, 9616];
+// スカベンジングボットはフリーレースにも参加可能
 
 interface BotInfo {
   tokenIndex: number;
@@ -254,17 +253,15 @@ async function main() {
     // Get all bots
     const allBots = await getAllBots(client);
 
-    // Filter out daily sprint and scavenging bots
+    // Filter out daily sprint bots only
     const eligibleBots = allBots.filter(bot => {
       // Exclude by name (daily sprint)
       if (DAILY_SPRINT_NAMES.includes(bot.name)) return false;
-      // Exclude by ID (scavenging)
-      if (SCAVENGING_BOTS.includes(bot.tokenIndex)) return false;
       return true;
     });
 
     console.log(`\n🎯 Eligible bots for free races: ${eligibleBots.length}`);
-    console.log(`   (Excluded: ${DAILY_SPRINT_NAMES.length} daily sprint + ${SCAVENGING_BOTS.length} scavenging)\n`);
+    console.log(`   (Excluded: ${DAILY_SPRINT_NAMES.length} daily sprint)\n`);
 
     if (eligibleBots.length === 0) {
       console.log("⚠️ No eligible bots for free races");

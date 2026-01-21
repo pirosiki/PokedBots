@@ -8,6 +8,8 @@
  * 順番: リチャージ → リペア = Perfect Tune獲得
  *
  * 対象: Daily Sprint固定メンバー25体
+ *
+ * 高速化: 並列実行 + 失敗時は個別リトライ
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -45,9 +47,10 @@ async function getTargetBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
   }
 
   const responseText = result.content[0].text;
-  const bots: BotInfo[] = [];
-
   const botBlocks = responseText.split(/(?=🏎️ PokedBot #)/g).filter((b: string) => b.includes('PokedBot #'));
+
+  // 対象ボットのtokenIndexとnameを抽出
+  const targetBotBasics: { tokenIndex: number; name: string }[] = [];
 
   for (const block of botBlocks) {
     const tokenMatch = block.match(/🏎️ PokedBot #(\d+)(?: "([^"]+)")?/);
@@ -63,28 +66,42 @@ async function getTargetBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
       targetName.includes(name)
     );
 
-    if (!isTarget) continue;
-
-    // 詳細を取得
-    const detailResult = await client.callTool("garage_get_robot_details", { token_index: tokenIndex });
-    if (!detailResult || !detailResult.content || !detailResult.content[0] || !detailResult.content[0].text) {
-      continue;
+    if (isTarget) {
+      targetBotBasics.push({ tokenIndex, name });
     }
-
-    const data = JSON.parse(detailResult.content[0].text);
-    const battery = data.condition?.battery || 0;
-    const condition = data.condition?.condition || 0;
-
-    let zone: string | null = null;
-    if (data.active_scavenging &&
-        data.active_scavenging.status &&
-        typeof data.active_scavenging.status === "string" &&
-        data.active_scavenging.status.includes("Active")) {
-      zone = data.active_scavenging.zone || null;
-    }
-
-    bots.push({ tokenIndex, name, battery, condition, zone });
   }
+
+  // 並列で詳細を取得
+  console.log(`📡 Fetching details for ${targetBotBasics.length} bots in parallel...`);
+  const detailPromises = targetBotBasics.map(async (bot) => {
+    try {
+      const detailResult = await client.callTool("garage_get_robot_details", { token_index: bot.tokenIndex });
+      if (!detailResult || !detailResult.content || !detailResult.content[0] || !detailResult.content[0].text) {
+        return null;
+      }
+
+      const data = JSON.parse(detailResult.content[0].text);
+      const battery = data.condition?.battery || 0;
+      const condition = data.condition?.condition || 0;
+
+      let zone: string | null = null;
+      if (data.active_scavenging &&
+          data.active_scavenging.status &&
+          typeof data.active_scavenging.status === "string" &&
+          data.active_scavenging.status.includes("Active")) {
+        zone = data.active_scavenging.zone || null;
+      }
+
+      return { tokenIndex: bot.tokenIndex, name: bot.name, battery, condition, zone } as BotInfo;
+    } catch {
+      return null;
+    }
+  });
+
+  const results = await Promise.allSettled(detailPromises);
+  const bots: BotInfo[] = results
+    .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
+    .map(r => r.value!);
 
   console.log(`✅ Found ${bots.length}/${TARGET_NAMES.length} target bots`);
   return bots;
@@ -160,14 +177,33 @@ async function main() {
       return;
     }
 
-    // Phase 0: スカベンジング中のボットを呼び戻す
+    // Phase 0: スカベンジング中のボットを呼び戻す（並列）
     const scavengingBots = bots.filter(b => b.zone !== null);
     if (scavengingBots.length > 0) {
-      console.log(`📥 Phase 0: Recalling ${scavengingBots.length} bot(s) from scavenging...`);
-      for (const bot of scavengingBots) {
-        console.log(`   → ${bot.name} from ${bot.zone}`);
-        await completeScavenging(client, bot.tokenIndex);
+      console.log(`📥 Phase 0: Recalling ${scavengingBots.length} bot(s) from scavenging in parallel...`);
+      const recallPromises = scavengingBots.map(async (bot) => {
+        try {
+          await completeScavenging(client, bot.tokenIndex);
+          return { bot, success: true };
+        } catch {
+          return { bot, success: false };
+        }
+      });
+      const recallResults = await Promise.allSettled(recallPromises);
+
+      // 失敗したボットをリトライ
+      const failedRecalls = recallResults
+        .filter((r): r is PromiseFulfilledResult<{bot: BotInfo, success: boolean}> =>
+          r.status === "fulfilled" && !r.value.success)
+        .map(r => r.value.bot);
+
+      if (failedRecalls.length > 0) {
+        console.log(`   ⚠️ ${failedRecalls.length} failed, retrying...`);
+        for (const bot of failedRecalls) {
+          await completeScavenging(client, bot.tokenIndex);
+        }
       }
+      console.log(`   ✅ Recalled ${scavengingBots.length} bots`);
       console.log("");
     }
 
@@ -182,27 +218,99 @@ async function main() {
     let rechargeCount = 0;
     let repairCount = 0;
 
-    // Phase 1: バッテリー < 100% → 有料リチャージ
+    // Phase 1: バッテリー < 100% → 有料リチャージ（並列）
     const needRecharge = bots.filter(b => b.battery < 100);
     if (needRecharge.length > 0) {
-      console.log(`\n🔋 Phase 1: Recharging ${needRecharge.length} bot(s)...`);
-      for (const bot of needRecharge) {
-        const success = await rechargeBot(client, bot.tokenIndex, bot.name);
-        if (success) rechargeCount++;
-        await new Promise(resolve => setTimeout(resolve, 500));
+      console.log(`\n🔋 Phase 1: Recharging ${needRecharge.length} bot(s) in parallel...`);
+
+      const rechargePromises = needRecharge.map(async (bot) => {
+        try {
+          const result = await client.callTool("garage_recharge_robot", { token_index: bot.tokenIndex });
+          if (result.isError) {
+            return { bot, success: false, error: result.content?.[0]?.text };
+          }
+          return { bot, success: true };
+        } catch (e) {
+          return { bot, success: false, error: String(e) };
+        }
+      });
+
+      const rechargeResults = await Promise.allSettled(rechargePromises);
+
+      const succeeded: BotInfo[] = [];
+      const failed: { bot: BotInfo; error?: string }[] = [];
+
+      for (const result of rechargeResults) {
+        if (result.status === "fulfilled") {
+          if (result.value.success) {
+            succeeded.push(result.value.bot);
+          } else {
+            failed.push({ bot: result.value.bot, error: result.value.error });
+          }
+        }
+      }
+
+      for (const bot of succeeded) {
+        console.log(`   ✅ ${bot.name}: Recharged`);
+        rechargeCount++;
+      }
+
+      // 失敗したボットを個別リトライ
+      if (failed.length > 0) {
+        console.log(`   ⚠️ ${failed.length} failed, retrying sequentially...`);
+        for (const { bot } of failed) {
+          const success = await rechargeBot(client, bot.tokenIndex, bot.name);
+          if (success) rechargeCount++;
+        }
       }
     } else {
       console.log("\n✓ Phase 1: All bots have 100% battery");
     }
 
-    // Phase 2: コンディション < 100% → 有料リペア (Perfect Tune!)
+    // Phase 2: コンディション < 100% → 有料リペア (Perfect Tune!)（並列）
     const needRepair = bots.filter(b => b.condition < 100);
     if (needRepair.length > 0) {
-      console.log(`\n🔧 Phase 2: Repairing ${needRepair.length} bot(s) → Perfect Tune...`);
-      for (const bot of needRepair) {
-        const success = await repairBot(client, bot.tokenIndex, bot.name);
-        if (success) repairCount++;
-        await new Promise(resolve => setTimeout(resolve, 500));
+      console.log(`\n🔧 Phase 2: Repairing ${needRepair.length} bot(s) → Perfect Tune in parallel...`);
+
+      const repairPromises = needRepair.map(async (bot) => {
+        try {
+          const result = await client.callTool("garage_repair_robot", { token_index: bot.tokenIndex });
+          if (result.isError) {
+            return { bot, success: false, error: result.content?.[0]?.text };
+          }
+          return { bot, success: true };
+        } catch (e) {
+          return { bot, success: false, error: String(e) };
+        }
+      });
+
+      const repairResults = await Promise.allSettled(repairPromises);
+
+      const succeeded: BotInfo[] = [];
+      const failed: { bot: BotInfo; error?: string }[] = [];
+
+      for (const result of repairResults) {
+        if (result.status === "fulfilled") {
+          if (result.value.success) {
+            succeeded.push(result.value.bot);
+          } else {
+            failed.push({ bot: result.value.bot, error: result.value.error });
+          }
+        }
+      }
+
+      for (const bot of succeeded) {
+        console.log(`   ✅ ${bot.name}: Repaired → Perfect Tune!`);
+        repairCount++;
+      }
+
+      // 失敗したボットを個別リトライ
+      if (failed.length > 0) {
+        console.log(`   ⚠️ ${failed.length} failed, retrying sequentially...`);
+        for (const { bot } of failed) {
+          const success = await repairBot(client, bot.tokenIndex, bot.name);
+          if (success) repairCount++;
+        }
       }
     } else {
       console.log("\n✓ Phase 2: All bots have 100% condition");

@@ -1,20 +1,22 @@
 /**
  * Auto-Scavenge V2
  *
- * ┌─────────────────────────────────────────────────────────┐
- * │                      判定フロー                          │
- * ├─────────────────────────────────────────────────────────┤
- * │  Cond < 70% ─────────────────────────────→ RepairBay   │
- * │  充電中 & Battery ≥ 95% ─────────────────→ ScrapHeaps  │
- * │  充電中 ─────────────────────────────────→ 継続        │
- * │  修理中 & Cond ≥ 95% & Battery ≥ 95% ───→ ScrapHeaps  │
- * │  修理中 & Cond ≥ 95% & Battery < 95% ───→ Charging    │
- * │  修理中 ─────────────────────────────────→ 継続        │
- * │  スカベンジ中 & Battery < 80% ──────────→ Charging    │
- * │  スカベンジ中 ───────────────────────────→ 継続        │
- * │  Battery ≥ 95% ──────────────────────────→ ScrapHeaps  │
- * │  それ以外 ───────────────────────────────→ Charging    │
- * └─────────────────────────────────────────────────────────┘
+ * ┌──────────────────────────────────────────────────────────────────┐
+ * │                         判定フロー                                │
+ * ├──────────────────────────────────────────────────────────────────┤
+ * │  Cond < 70% & RepairBay空きあり ─────────────→ RepairBay        │
+ * │  Cond < 70% & RepairBay満 & Bat≥95 & Cond≥50 → ScrapHeaps       │
+ * │  Cond < 70% & RepairBay満 ───────────────────→ Charging(待機)   │
+ * │  充電中 & Battery ≥ 95% ─────────────────────→ ScrapHeaps       │
+ * │  充電中 ─────────────────────────────────────→ 継続             │
+ * │  修理中 & Cond ≥ 95% & Battery ≥ 95% ────────→ ScrapHeaps       │
+ * │  修理中 & Cond ≥ 95% & Battery < 95% ────────→ Charging         │
+ * │  修理中 ─────────────────────────────────────→ 継続             │
+ * │  スカベンジ中 & Battery < 80% ───────────────→ Charging         │
+ * │  スカベンジ中 ───────────────────────────────→ 継続             │
+ * │  Battery ≥ 95% ──────────────────────────────→ ScrapHeaps       │
+ * │  それ以外 ───────────────────────────────────→ Charging         │
+ * └──────────────────────────────────────────────────────────────────┘
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -40,11 +42,12 @@ const TARGET_BOTS = [
 ];
 
 // Thresholds
-const MAX_CHARGING = 2;           // Reduced to match RepairBay capacity
+const MAX_REPAIR_BAY = 3;         // RepairBay capacity (user has 3 bays)
 const BATTERY_FULL = 95;          // Can start scavenging
 const BATTERY_LOW = 80;           // Must return to charge
 const CONDITION_FULL = 95;        // Repair complete
 const CONDITION_LOW = 70;         // Need repair
+const CONDITION_MIN_SCAVENGE = 50; // Min condition to scavenge when RepairBay full
 
 interface BotStatus {
   tokenIndex: number;
@@ -173,6 +176,10 @@ async function main() {
 
     const actions: string[] = [];
 
+    // Track RepairBay usage
+    let repairBayCount = repairingBots.length;
+    console.log(`🔧 RepairBay: ${repairBayCount}/${MAX_REPAIR_BAY} slots used\n`);
+
     // Process each bot according to the flow
     console.log("── Processing bots ──");
 
@@ -180,14 +187,29 @@ async function main() {
       const { tokenIndex, name, battery, condition, zone } = bot;
       const displayName = `#${tokenIndex} ${name}`;
 
-      // 1. Condition < 70% → RepairBay
+      // 1. Condition < 70% → RepairBay (if capacity available)
       if (condition < CONDITION_LOW) {
-        if (zone !== "RepairBay") {
+        if (zone === "RepairBay") {
+          console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
+          continue;
+        }
+
+        // Check RepairBay capacity
+        if (repairBayCount < MAX_REPAIR_BAY) {
           console.log(`🔧 ${displayName}: Condition ${condition}% < ${CONDITION_LOW}% → RepairBay`);
           await moveBot(client, tokenIndex, "RepairBay");
           actions.push(`${displayName} → RepairBay`);
+          repairBayCount++;
+        } else if (battery >= BATTERY_FULL && condition >= CONDITION_MIN_SCAVENGE) {
+          // RepairBay full but can still scavenge
+          console.log(`⛏️ ${displayName}: RepairBay full, Cond ${condition}% ≥ ${CONDITION_MIN_SCAVENGE}% → ScrapHeaps`);
+          await moveBot(client, tokenIndex, "ScrapHeaps");
+          actions.push(`${displayName} → ScrapHeaps (RepairBay full)`);
         } else {
-          console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
+          // RepairBay full, wait at ChargingStation
+          console.log(`🔌 ${displayName}: RepairBay full, waiting at ChargingStation`);
+          await moveBot(client, tokenIndex, "ChargingStation");
+          actions.push(`${displayName} → ChargingStation (waiting for RepairBay)`);
         }
         continue;
       }

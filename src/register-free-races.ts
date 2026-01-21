@@ -115,7 +115,7 @@ async function getUpcomingFreeRaces(client: PokedRaceMCPClient): Promise<FreeRac
         if (event.event_type?.includes("DailySprint")) continue;
 
         const startTime = new Date(event.start_time_utc);
-        if (startTime <= now) continue; // Skip past races
+        if (isNaN(startTime.getTime()) || startTime <= now) continue; // Skip invalid or past races
 
         races.push({
           eventId: event.event_id,
@@ -147,14 +147,16 @@ async function getUpcomingFreeRaces(client: PokedRaceMCPClient): Promise<FreeRac
 
       if (!eventIdMatch) continue;
 
-      let startTime = new Date();
+      let startTime: Date | null = null;
       if (timeMatch) {
-        try {
-          startTime = new Date(timeMatch[1]);
-        } catch {}
+        const parsed = new Date(timeMatch[1].trim());
+        if (!isNaN(parsed.getTime())) {
+          startTime = parsed;
+        }
       }
 
-      if (startTime <= now) continue;
+      // Skip if no valid start time or already past
+      if (!startTime || startTime <= now) continue;
 
       races.push({
         eventId: parseInt(eventIdMatch[1]),

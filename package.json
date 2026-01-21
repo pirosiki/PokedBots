@@ -20,7 +20,8 @@
     "daily-sprint-post-race": "tsx src/daily-sprint-post-race.ts",
     "daily-sprint-pre-race": "tsx src/daily-sprint-pre-race.ts",
     "repair-racing": "tsx repair-racing-bots.ts",
-    "charge-racing": "tsx charge-racing-bots.ts"
+    "charge-racing": "tsx charge-racing-bots.ts",
+    "register-free-races": "tsx src/register-free-races.ts"
   },
   "keywords": [
     "mcp",

@@ -135,14 +135,15 @@ async function getUpcomingFreeRaces(client: PokedRaceMCPClient): Promise<FreeRac
     const eventBlocks = responseText.split('---').filter(block => block.includes('Event #'));
 
     for (const block of eventBlocks) {
-      // Skip Daily Sprint
-      if (block.includes('DailySprint') || block.includes('Daily sprint')) continue;
+      // Skip Daily Sprint (check for "Daily Sprint" with capital S)
+      if (block.includes('Daily Sprint')) continue;
 
       const eventIdMatch = block.match(/Event #(\d+)/);
-      const classMatch = block.match(/Class:\s*([^\n]+)/);
+      const classMatch = block.match(/Divisions:\s*([^\n]+)/);
       const terrainMatch = block.match(/Terrain:\s*([^\n]+)/);
       const distanceMatch = block.match(/Distance:\s*([^\n]+)/);
-      const timeMatch = block.match(/Start(?:s)?:\s*([^\n]+)/);
+      // Match ISO date format: 📅 Start: 2026-01-21T09:00:00Z
+      const timeMatch = block.match(/📅 Start: (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/);
       const registeredMatch = block.match(/Registered:\s*(\d+)\/(\d+)/);
 
       if (!eventIdMatch) continue;

@@ -1,13 +1,5 @@
 // Cloudflare Workers - GitHub Actions Scheduler
 // Triggers GitHub Actions workflows on a reliable schedule
-//
-// Team Daily Racing System:
-// - Team A: Races at 0:00, 12:00 UTC (9:00, 21:00 JST)
-// - Team B: Races at 6:00, 18:00 UTC (15:00, 3:00 JST)
-//
-// Crons:
-// - every 15 min       : Team Daily Maintenance
-// - 50 5,11,17,23      : Team Daily Pre-Race (10 min before races)
 
 interface Env {
   GITHUB_TOKEN: string;
@@ -52,16 +44,17 @@ export default {
     console.log(`⏰ Scheduler triggered at ${new Date().toISOString()}`);
     console.log(`   Cron: ${event.cron}`);
 
+    // Determine which workflow to trigger based on cron schedule
     let workflowFile = '';
 
     if (event.cron === '*/15 * * * *') {
-      // Team Daily Maintenance - runs every 15 minutes
-      // Handles: post-race recovery, scavenging, maintenance cycles, pre-race prep, registration
-      workflowFile = 'team-daily-maintenance.yml';
-    } else if (event.cron === '50 5,11,17,23 * * *') {
-      // Team Daily Pre-Race - 10 minutes before each race
-      // Handles: paid repair for Perfect Tune
-      workflowFile = 'team-daily-pre-race.yml';
+      workflowFile = 'auto-scavenge.yml';  // V2: 15 bots scavenging
+    } else if (event.cron === '30 5,11,17,23 * * *') {
+      workflowFile = 'register-daily-sprint.yml';  // Daily Sprint: 30min before
+    } else if (event.cron === '5-59/15 * * * *') {
+      workflowFile = 'daily-sprint-post-race.yml';  // Daily Sprint: every 15min (charge & standby)
+    } else if (event.cron === '45 5,11,17,23 * * *') {
+      workflowFile = 'daily-sprint-pre-race.yml';  // Daily Sprint: 15min before (Perfect Tune)
     }
 
     if (workflowFile) {
@@ -71,8 +64,6 @@ export default {
       } else {
         console.log(`❌ Failed to trigger workflow ${workflowFile}`);
       }
-    } else {
-      console.log(`⚠️ Unknown cron pattern: ${event.cron}`);
     }
   },
 
@@ -84,11 +75,7 @@ export default {
       return new Response(
         JSON.stringify({
           error: 'Missing workflow parameter',
-          usage: '?workflow=team-daily-maintenance.yml or ?workflow=team-daily-pre-race.yml',
-          crons: {
-            '*/15 * * * *': 'team-daily-maintenance.yml',
-            '50 5,11,17,23 * * *': 'team-daily-pre-race.yml'
-          }
+          usage: '?workflow=auto-scavenge.yml or ?workflow=auto-racing.yml'
         }),
         {
           status: 400,

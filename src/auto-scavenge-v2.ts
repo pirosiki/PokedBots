@@ -25,15 +25,16 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (15 total)
+// Target bots (4 total - reduced for 2 RepairBay slots)
 const TARGET_BOTS = [
-  9381, 5357, 389, 2957, 9716,  // Group A
-  1722, 5597, 3586, 6790, 3606, // Group B
-  8255, 8623, 6613, 359, 8603   // Group C
+  2669,  // Bach (Silent, Rating 54)
+  5143,  // ハチワレ (Silent, Rating 54)
+  2630,  // Noboru (Elite, Rating 44)
+  2441   // neopirosiki (Elite, Rating 44)
 ];
 
 // Thresholds
-const MAX_CHARGING = 5;           // Priority charging slots (100% efficiency)
+const MAX_CHARGING = 2;           // Reduced to match RepairBay capacity
 const BATTERY_FULL = 95;          // Can start scavenging
 const BATTERY_LOW = 80;           // Must return to charge
 const CONDITION_FULL = 95;        // Repair complete

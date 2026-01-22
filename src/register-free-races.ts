@@ -2,6 +2,8 @@
  * Register Free Races
  *
  * デイリースプリントとスカベンジング以外のボットをフリーレースに登録する
+ *
+ * 高速化: 並列実行 + 失敗時は個別リトライ
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -297,12 +299,15 @@ async function main() {
       console.log(`   Event #${race.eventId}: ${race.raceClass} / ${race.terrain} @ ${timeStr} (${race.registeredCount}/${race.maxEntrants})`);
     }
 
-    // Register bots for races
-    console.log("\n── Registering bots ──");
+    // Plan registrations first (which bot goes to which race)
+    console.log("\n── Planning registrations ──");
 
-    let successCount = 0;
-    let skipCount = 0;
-    let failCount = 0;
+    interface RegTask {
+      bot: BotInfo;
+      race: FreeRaceInfo;
+    }
+
+    const tasks: RegTask[] = [];
 
     for (const bot of eligibleBots) {
       // Find a suitable race for this bot
@@ -313,36 +318,84 @@ async function main() {
           continue;
         }
 
-        // Check if race is full
-        if (race.registeredCount >= race.maxEntrants) {
+        // Check if race is full (including planned registrations)
+        const plannedForThisRace = tasks.filter(t => t.race.eventId === race.eventId).length;
+        if (race.registeredCount + plannedForThisRace >= race.maxEntrants) {
           continue;
         }
 
-        // Check class compatibility (simplified - may need adjustment)
-        // For now, try to register and let the API validate
+        tasks.push({ bot, race });
+        break; // Move to next bot
+      }
+    }
 
-        console.log(`\n🏎️ #${bot.tokenIndex} ${bot.name} → Event #${race.eventId} (${race.raceClass})`);
+    console.log(`📋 Planned ${tasks.length} registrations`);
 
-        const success = await registerForRace(client, bot.tokenIndex, race.eventId);
+    if (tasks.length === 0) {
+      console.log("✅ No registrations needed");
+      await client.close();
+      return;
+    }
 
-        if (success) {
-          console.log(`   ✅ Registered!`);
-          successCount++;
-          race.registeredCount++; // Update local count
-          break; // Move to next bot
+    // Execute registrations in parallel
+    console.log(`\n⚡ Registering ${tasks.length} bots in parallel...`);
+
+    const regPromises = tasks.map(async (task) => {
+      try {
+        const result = await client.callTool("racing_register_for_event", {
+          event_id: task.race.eventId,
+          token_index: task.bot.tokenIndex
+        });
+        if (result.isError || result.content[0].text.includes("Error")) {
+          return { task, success: false, error: result.content?.[0]?.text };
+        }
+        return { task, success: true };
+      } catch (e) {
+        return { task, success: false, error: String(e) };
+      }
+    });
+
+    const results = await Promise.allSettled(regPromises);
+
+    const succeeded: RegTask[] = [];
+    const failed: { task: RegTask; error?: string }[] = [];
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.success) {
+          succeeded.push(result.value.task);
         } else {
-          failCount++;
-          // Try next race
+          failed.push({ task: result.value.task, error: result.value.error });
         }
       }
     }
 
+    // Log successes
+    for (const task of succeeded) {
+      console.log(`   ✅ #${task.bot.tokenIndex} ${task.bot.name} → Event #${task.race.eventId}`);
+    }
+
+    // Retry failed registrations sequentially
+    let retrySuccess = 0;
+    if (failed.length > 0) {
+      console.log(`\n⚠️ ${failed.length} failed, retrying sequentially...`);
+      for (const { task } of failed) {
+        const success = await registerForRace(client, task.bot.tokenIndex, task.race.eventId);
+        if (success) {
+          console.log(`   ✅ #${task.bot.tokenIndex} ${task.bot.name} → Event #${task.race.eventId}`);
+          retrySuccess++;
+        }
+      }
+    }
+
+    const totalSuccess = succeeded.length + retrySuccess;
+    const totalFailed = failed.length - retrySuccess;
+
     // Summary
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("📋 Summary:");
-    console.log(`   ✅ Registered: ${successCount}`);
-    console.log(`   ⏭️ Skipped: ${skipCount}`);
-    console.log(`   ❌ Failed: ${failCount}`);
+    console.log(`   ✅ Registered: ${totalSuccess}`);
+    console.log(`   ❌ Failed: ${totalFailed}`);
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     await client.close();

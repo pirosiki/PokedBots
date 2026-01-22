@@ -17,6 +17,8 @@
  * │  Battery ≥ 95% ──────────────────────────────→ ScrapHeaps       │
  * │  それ以外 ───────────────────────────────────→ Charging         │
  * └──────────────────────────────────────────────────────────────────┘
+ *
+ * 高速化: 並列実行 + 失敗時は個別リトライ
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -68,15 +70,13 @@ interface BotStatus {
 }
 
 async function getBotStatuses(client: PokedRaceMCPClient): Promise<BotStatus[]> {
-  const statuses: BotStatus[] = [];
-
-  for (const tokenIndex of TARGET_BOTS) {
+  // 並列で全ボットのステータスを取得
+  const statusPromises = TARGET_BOTS.map(async (tokenIndex) => {
     try {
       const result = await client.callTool("garage_get_robot_details", { token_index: tokenIndex });
 
       if (!result || !result.content || !result.content[0] || !result.content[0].text) {
-        console.warn(`  ⚠️  Empty response for bot #${tokenIndex}`);
-        continue;
+        return null;
       }
 
       const data = JSON.parse(result.content[0].text);
@@ -92,13 +92,16 @@ async function getBotStatuses(client: PokedRaceMCPClient): Promise<BotStatus[]> 
         zone = data.active_scavenging.zone || null;
       }
 
-      statuses.push({ tokenIndex, name, battery, condition, zone });
-    } catch (error) {
-      console.error(`  ✗ Failed to get status for bot #${tokenIndex}:`, error);
+      return { tokenIndex, name, battery, condition, zone } as BotStatus;
+    } catch {
+      return null;
     }
-  }
+  });
 
-  return statuses;
+  const results = await Promise.allSettled(statusPromises);
+  return results
+    .filter((r): r is PromiseFulfilledResult<BotStatus | null> => r.status === "fulfilled" && r.value !== null)
+    .map(r => r.value!);
 }
 
 async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number): Promise<boolean> {
@@ -184,14 +187,20 @@ async function main() {
     }
     console.log("");
 
-    const actions: string[] = [];
-
     // Track RepairBay usage
     let repairBayCount = repairingBots.length;
     console.log(`🔧 RepairBay: ${repairBayCount}/${MAX_REPAIR_BAY} slots used\n`);
 
-    // Process each bot according to the flow
-    console.log("── Processing bots ──");
+    // Plan actions first (sequential to track RepairBay capacity)
+    console.log("── Planning actions ──");
+
+    interface BotTask {
+      bot: BotStatus;
+      action: "repair" | "scrapheaps" | "charging" | "none";
+      reason: string;
+    }
+
+    const tasks: BotTask[] = [];
 
     for (const bot of statuses) {
       const { tokenIndex, name, battery, condition, zone } = bot;
@@ -201,91 +210,130 @@ async function main() {
       if (condition < CONDITION_LOW) {
         if (zone === "RepairBay") {
           console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
+          tasks.push({ bot, action: "none", reason: "repairing" });
           continue;
         }
 
-        // Check RepairBay capacity
         if (repairBayCount < MAX_REPAIR_BAY) {
-          console.log(`🔧 ${displayName}: Condition ${condition}% < ${CONDITION_LOW}% → RepairBay`);
-          await moveBot(client, tokenIndex, "RepairBay");
-          actions.push(`${displayName} → RepairBay`);
+          tasks.push({ bot, action: "repair", reason: `Cond ${condition}%` });
           repairBayCount++;
         } else if (battery >= BATTERY_FULL) {
-          // RepairBay full but battery full - go scavenge (don't block ChargingStation)
-          console.log(`⛏️ ${displayName}: RepairBay full, Battery ${battery}% → ScrapHeaps`);
-          await moveBot(client, tokenIndex, "ScrapHeaps");
-          actions.push(`${displayName} → ScrapHeaps (RepairBay full)`);
+          tasks.push({ bot, action: "scrapheaps", reason: "RepairBay full" });
         } else {
-          // RepairBay full, charge first then scavenge
-          console.log(`🔌 ${displayName}: RepairBay full, Battery ${battery}% → ChargingStation`);
-          await moveBot(client, tokenIndex, "ChargingStation");
-          actions.push(`${displayName} → ChargingStation (charge then scavenge)`);
+          tasks.push({ bot, action: "charging", reason: "RepairBay full, charge first" });
         }
         continue;
       }
 
       // 2. Charging & Battery ≥ 95% → ScrapHeaps
       if (zone === "ChargingStation" && battery >= BATTERY_FULL) {
-        console.log(`⛏️ ${displayName}: Charged to ${battery}% → ScrapHeaps`);
-        await moveBot(client, tokenIndex, "ScrapHeaps");
-        actions.push(`${displayName} → ScrapHeaps (charged)`);
+        tasks.push({ bot, action: "scrapheaps", reason: "charged" });
         continue;
       }
 
       // 3. Charging → Continue
       if (zone === "ChargingStation") {
         console.log(`🔌 ${displayName}: Charging... (${battery}%)`);
+        tasks.push({ bot, action: "none", reason: "charging" });
         continue;
       }
 
       // 4. Repairing & Cond ≥ 95% & Battery ≥ 95% → ScrapHeaps
       if (zone === "RepairBay" && condition >= CONDITION_FULL && battery >= BATTERY_FULL) {
-        console.log(`⛏️ ${displayName}: Repaired & charged → ScrapHeaps`);
-        await moveBot(client, tokenIndex, "ScrapHeaps");
-        actions.push(`${displayName} → ScrapHeaps (repaired)`);
+        tasks.push({ bot, action: "scrapheaps", reason: "repaired" });
         continue;
       }
 
       // 5. Repairing & Cond ≥ 95% & Battery < 95% → Charging
       if (zone === "RepairBay" && condition >= CONDITION_FULL && battery < BATTERY_FULL) {
-        console.log(`🔌 ${displayName}: Repaired, battery ${battery}% → ChargingStation`);
-        await moveBot(client, tokenIndex, "ChargingStation");
-        actions.push(`${displayName} → ChargingStation (repaired)`);
+        tasks.push({ bot, action: "charging", reason: "repaired, need charge" });
         continue;
       }
 
       // 6. Repairing → Continue
       if (zone === "RepairBay") {
         console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
+        tasks.push({ bot, action: "none", reason: "repairing" });
         continue;
       }
 
       // 7. Scavenging & Battery < 80% → Charging
       if (zone === "ScrapHeaps" && battery < BATTERY_LOW) {
-        console.log(`🔌 ${displayName}: Battery ${battery}% < ${BATTERY_LOW}% → ChargingStation`);
-        await moveBot(client, tokenIndex, "ChargingStation");
-        actions.push(`${displayName} → ChargingStation (low battery)`);
+        tasks.push({ bot, action: "charging", reason: "low battery" });
         continue;
       }
 
       // 8. Scavenging → Continue
       if (zone === "ScrapHeaps") {
         console.log(`⛏️ ${displayName}: Scavenging... (${battery}%)`);
+        tasks.push({ bot, action: "none", reason: "scavenging" });
         continue;
       }
 
       // 9. Battery ≥ 95% → ScrapHeaps
       if (battery >= BATTERY_FULL) {
-        console.log(`⛏️ ${displayName}: Battery ${battery}% → ScrapHeaps`);
-        await moveBot(client, tokenIndex, "ScrapHeaps");
-        actions.push(`${displayName} → ScrapHeaps`);
+        tasks.push({ bot, action: "scrapheaps", reason: "battery full" });
         continue;
       }
 
       // 10. Otherwise → Charging
-      console.log(`🔌 ${displayName}: Battery ${battery}% → ChargingStation`);
-      await moveBot(client, tokenIndex, "ChargingStation");
-      actions.push(`${displayName} → ChargingStation`);
+      tasks.push({ bot, action: "charging", reason: "need charge" });
+    }
+
+    // Execute actions in parallel
+    const activeTasks = tasks.filter(t => t.action !== "none");
+    console.log(`\n⚡ Executing ${activeTasks.length} actions in parallel...`);
+
+    const taskPromises = activeTasks.map(async (task): Promise<{ task: BotTask; success: boolean }> => {
+      const targetZone = task.action === "repair" ? "RepairBay" :
+                         task.action === "scrapheaps" ? "ScrapHeaps" : "ChargingStation";
+      try {
+        await moveBot(client, task.bot.tokenIndex, targetZone);
+        return { task, success: true };
+      } catch {
+        return { task, success: false };
+      }
+    });
+
+    const results = await Promise.allSettled(taskPromises);
+
+    const succeeded: BotTask[] = [];
+    const failed: BotTask[] = [];
+    const actions: string[] = [];
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.success) {
+          succeeded.push(result.value.task);
+        } else {
+          failed.push(result.value.task);
+        }
+      }
+    }
+
+    // Log successes
+    for (const task of succeeded) {
+      const targetZone = task.action === "repair" ? "RepairBay" :
+                         task.action === "scrapheaps" ? "ScrapHeaps" : "ChargingStation";
+      const icon = task.action === "repair" ? "🔧" : task.action === "scrapheaps" ? "⛏️" : "🔌";
+      console.log(`   ${icon} #${task.bot.tokenIndex} ${task.bot.name} → ${targetZone} (${task.reason})`);
+      actions.push(`#${task.bot.tokenIndex} ${task.bot.name} → ${targetZone}`);
+    }
+
+    // Retry failed actions sequentially
+    if (failed.length > 0) {
+      console.log(`\n⚠️ ${failed.length} failed, retrying sequentially...`);
+      for (const task of failed) {
+        const targetZone = task.action === "repair" ? "RepairBay" :
+                           task.action === "scrapheaps" ? "ScrapHeaps" : "ChargingStation";
+        try {
+          await moveBot(client, task.bot.tokenIndex, targetZone);
+          console.log(`   ✅ #${task.bot.tokenIndex} ${task.bot.name} → ${targetZone}`);
+          actions.push(`#${task.bot.tokenIndex} ${task.bot.name} → ${targetZone} (retry)`);
+        } catch (e) {
+          console.log(`   ❌ #${task.bot.tokenIndex} ${task.bot.name} failed: ${e}`);
+        }
+      }
     }
 
     // Summary

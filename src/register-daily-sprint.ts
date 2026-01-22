@@ -3,6 +3,8 @@
  *
  * 固定メンバーを次のDaily sprint challengeに登録する
  * 手動実行: npm run register-daily-sprint
+ *
+ * 高速化: 並列実行 + 失敗時は個別リトライ
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -205,24 +207,61 @@ async function main() {
       return;
     }
 
-    console.log(`\n📝 Registering ${toRegister.length} bots for Event #${event.eventId}...`);
+    console.log(`\n📝 Registering ${toRegister.length} bots for Event #${event.eventId} in parallel...`);
 
-    let success = 0;
-    let failed = 0;
+    // 並列実行
+    const registerPromises = toRegister.map(async (bot) => {
+      try {
+        const result = await client.callTool("racing_register_for_event", {
+          event_id: event.eventId,
+          token_index: bot.tokenIndex,
+        });
+        if (result.isError) {
+          return { bot, success: false, error: result.content?.[0]?.text };
+        }
+        return { bot, success: true };
+      } catch (e) {
+        return { bot, success: false, error: String(e) };
+      }
+    });
 
-    for (const bot of toRegister) {
-      const ok = await registerBot(client, event.eventId, bot.tokenIndex, bot.name);
-      if (ok) success++;
-      else failed++;
+    const results = await Promise.allSettled(registerPromises);
 
-      // Rate limit対策
-      await new Promise(resolve => setTimeout(resolve, 500));
+    const succeeded: BotInfo[] = [];
+    const failed: { bot: BotInfo; error?: string }[] = [];
+
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        if (result.value.success) {
+          succeeded.push(result.value.bot);
+        } else {
+          failed.push({ bot: result.value.bot, error: result.value.error });
+        }
+      }
     }
 
+    // 成功をログ
+    for (const bot of succeeded) {
+      console.log(`   ✅ ${bot.name}`);
+    }
+
+    // 失敗したボットを個別リトライ
+    let retrySuccess = 0;
+    if (failed.length > 0) {
+      console.log(`\n⚠️ ${failed.length} failed, retrying sequentially...`);
+      for (const { bot } of failed) {
+        const ok = await registerBot(client, event.eventId, bot.tokenIndex, bot.name);
+        if (ok) retrySuccess++;
+      }
+    }
+
+    const totalSuccess = succeeded.length + retrySuccess;
+    const totalFailed = failed.length - retrySuccess;
+
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log(`✅ Registered: ${success}`);
-    console.log(`❌ Failed: ${failed}`);
-    console.log(`📊 Total in event: ${alreadyRegistered.length + success}`);
+    console.log(`✅ Registered: ${totalSuccess}`);
+    console.log(`❌ Failed: ${totalFailed}`);
+    console.log(`📊 Total in event: ${alreadyRegistered.length + totalSuccess}`);
 
     await client.close();
   } catch (error) {

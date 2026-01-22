@@ -55,7 +55,7 @@ const TARGET_BOTS = [
 ];
 
 // Thresholds
-const MAX_REPAIR_BAY = 3;         // RepairBay capacity (user has 3 bays)
+const MAX_REPAIR_BAY = 4;         // RepairBay capacity (user has 4 bays)
 const BATTERY_FULL = 95;          // Can start scavenging
 const BATTERY_LOW = 80;           // Must return to charge
 const CONDITION_FULL = 95;        // Repair complete

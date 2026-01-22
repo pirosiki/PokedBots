@@ -22,7 +22,7 @@ const DAILY_SPRINT_NAMES = [
 ];
 
 // 除外するボット（スカベンジング: IDベース）
-const SCAVENGING_BOTS = [2669, 5143, 2630, 2441, 9381, 5357, 389, 2957, 2740, 9616];
+const SCAVENGING_BOTS = [2669, 5143, 2630, 2441, 9381, 5357, 389, 2957, 2740, 9616, 820, 1866, 9888, 879, 2985];
 
 interface BotInfo {
   tokenIndex: number;

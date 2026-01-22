@@ -27,7 +27,7 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (10 total)
+// Target bots (15 total)
 const TARGET_BOTS = [
   2669,  // Bach (Silent, Rating 54)
   5143,  // ハチワレ (Silent, Rating 54)
@@ -38,7 +38,12 @@ const TARGET_BOTS = [
   389,
   2957,
   2740,
-  9616
+  9616,
+  820,
+  1866,
+  9888,
+  879,
+  2985
 ];
 
 // Thresholds

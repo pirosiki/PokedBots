@@ -26,11 +26,25 @@
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
 import dotenv from "dotenv";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
 
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
+
+// 状態ファイルのパス
+const STATE_FILE = path.join(process.cwd(), ".special-race-state.json");
+
+interface StateData {
+  eventId: number;
+  eventName: string;
+  startTime: string;
+  registeredBots: number[];
+  createdAt: string;
+  completed?: boolean;  // Finalフェーズ完了フラグ
+}
 
 // ========================================
 // 設定: 対象イベント名（ここを変更して別のイベントに対応）
@@ -110,6 +124,34 @@ async function getRegisteredBots(client: PokedRaceMCPClient, eventId: number): P
 
   console.log(`✅ Found ${registered.length} registered bots`);
   return registered;
+}
+
+function loadState(): StateData | null {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+      return data as StateData;
+    }
+  } catch {
+    // Ignore errors
+  }
+  return null;
+}
+
+function saveState(state: StateData): void {
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  console.log(`💾 State saved to ${STATE_FILE}`);
+}
+
+function deleteState(): void {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      fs.unlinkSync(STATE_FILE);
+      console.log(`🗑️ State file deleted`);
+    }
+  } catch {
+    // Ignore errors
+  }
 }
 
 async function getBotDetails(client: PokedRaceMCPClient, tokenIndexes: number[]): Promise<BotInfo[]> {
@@ -214,6 +256,20 @@ async function main() {
       return;
     }
 
+    // Check if already completed (for THIS event)
+    const existingState = loadState();
+    if (existingState?.completed && existingState.eventId === event.eventId) {
+      console.log(`✅ Already completed for Event #${existingState.eventId}`);
+      console.log("   Delete .special-race-state.json to reset");
+      await client.close();
+      return;
+    }
+    // Different event detected - reset state
+    if (existingState && existingState.eventId !== event.eventId) {
+      console.log(`🔄 New event detected (was #${existingState.eventId}, now #${event.eventId})`);
+      deleteState();
+    }
+
     // Determine phase
     const { minutesUntilStart } = event;
     let phase: "scavenge" | "prep" | "final";
@@ -229,12 +285,30 @@ async function main() {
       console.log(`\n📊 Phase: FINAL (<${FINAL_PHASE_MINUTES}min before race) - Paid maintenance`);
     }
 
-    // Get registered bots
-    const registeredIds = await getRegisteredBots(client, event.eventId);
-    if (registeredIds.length === 0) {
-      console.log("⚠️ No bots registered for this event");
-      await client.close();
-      return;
+    // Get registered bots (use cache if available)
+    let registeredIds: number[];
+    const cachedState = loadState();
+
+    if (cachedState && cachedState.eventId === event.eventId) {
+      // Use cached data
+      console.log(`📦 Using cached bot list (${cachedState.registeredBots.length} bots)`);
+      registeredIds = cachedState.registeredBots;
+    } else {
+      // Fetch fresh and cache
+      registeredIds = await getRegisteredBots(client, event.eventId);
+      if (registeredIds.length === 0) {
+        console.log("⚠️ No bots registered for this event");
+        await client.close();
+        return;
+      }
+      // Save state for future runs
+      saveState({
+        eventId: event.eventId,
+        eventName: event.eventName,
+        startTime: event.startTime.toISOString(),
+        registeredBots: registeredIds,
+        createdAt: new Date().toISOString()
+      });
     }
 
     // Get bot details
@@ -408,6 +482,18 @@ async function main() {
     console.log(`📋 Phase: ${phase.toUpperCase()}`);
     console.log(`⏰ Race starts in: ${minutesUntilStart} minutes`);
     console.log(`🤖 Bots managed: ${bots.length}`);
+
+    // Final phase完了後は完了フラグを立てる（次回実行をスキップ）
+    if (phase === "final") {
+      const finalState = loadState();
+      if (finalState) {
+        finalState.completed = true;
+        saveState(finalState);
+      }
+      console.log("🏁 Final phase complete - preparation finished!");
+      console.log("   Next runs will skip until state file is deleted");
+    }
+
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 
     await client.close();

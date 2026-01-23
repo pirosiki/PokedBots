@@ -1,0 +1,11 @@
+name = "special-race-prep"
+main = "special-race-prep-worker.js"
+compatibility_date = "2024-01-01"
+
+# 15分ごとに実行
+[triggers]
+crons = ["*/15 * * * *"]
+
+# 環境変数はCloudflare Dashboardで設定:
+# - GITHUB_TOKEN: GitHub Personal Access Token
+# - RACE_START_TIME: レース開始時刻 (例: "2026-01-25T12:00:00Z")

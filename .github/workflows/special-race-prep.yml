@@ -1,0 +1,25 @@
+name: Special Race Prep
+
+on:
+  workflow_dispatch:  # Cloudflare Workers から呼び出し
+
+jobs:
+  prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run special race prep
+        run: npm run special-race-prep
+        env:
+          MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+          MCP_SERVER_URL: ${{ secrets.MCP_SERVER_URL }}

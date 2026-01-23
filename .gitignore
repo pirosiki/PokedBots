@@ -22,3 +22,6 @@ npm-debug.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime state files
+.special-race-state.json

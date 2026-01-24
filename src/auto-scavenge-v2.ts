@@ -29,7 +29,7 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (21 total)
+// Target bots (20 total) - removed 9616 (not registered)
 const TARGET_BOTS = [
   2669,  // Bach (Silent, Rating 54)
   5143,  // ハチワレ (Silent, Rating 54)
@@ -40,7 +40,7 @@ const TARGET_BOTS = [
   389,
   2957,
   2740,
-  9616,
+  // 9616 removed - not registered to account
   820,
   1866,
   9888,
@@ -206,7 +206,7 @@ async function main() {
       const { tokenIndex, name, battery, condition, zone } = bot;
       const displayName = `#${tokenIndex} ${name}`;
 
-      // 1. Condition < 70% → RepairBay (if capacity available)
+      // 1. Condition < 70% → RepairBay (if capacity available), else wait at ChargingStation
       if (condition < CONDITION_LOW) {
         if (zone === "RepairBay") {
           console.log(`🔧 ${displayName}: Repairing... (${condition}%)`);
@@ -217,10 +217,13 @@ async function main() {
         if (repairBayCount < MAX_REPAIR_BAY) {
           tasks.push({ bot, action: "repair", reason: `Cond ${condition}%` });
           repairBayCount++;
-        } else if (battery >= BATTERY_FULL) {
-          tasks.push({ bot, action: "scrapheaps", reason: "RepairBay full" });
+        } else if (zone === "ChargingStation") {
+          // RepairBay満で充電中 → そのまま待機
+          console.log(`🔌 ${displayName}: Waiting for RepairBay (${condition}%)`);
+          tasks.push({ bot, action: "none", reason: "waiting for repair" });
         } else {
-          tasks.push({ bot, action: "charging", reason: "RepairBay full, charge first" });
+          // RepairBay満 → ChargingStationで待機（ScrapHeapsには送らない！）
+          tasks.push({ bot, action: "charging", reason: "waiting for RepairBay" });
         }
         continue;
       }

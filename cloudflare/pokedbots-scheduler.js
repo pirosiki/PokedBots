@@ -10,10 +10,11 @@ const GITHUB_OWNER = "pirosiki";
 const GITHUB_REPO = "PokedBots";
 
 // Cron → ワークフローのマッピング
+// レース時刻: 6:00, 12:00, 18:00, 0:00 UTC (15:00, 21:00, 3:00, 9:00 JST)
 const CRON_WORKFLOWS = {
   "*/15 * * * *": "auto-scavenge.yml",
-  "30 5,11,17,23 * * *": "daily-sprint-pre-race.yml",
-  "45 5,11,17,23 * * *": "daily-sprint-post-race.yml",
+  "30 5,11,17,23 * * *": "daily-sprint-pre-race.yml",   // 30分前
+  "15 6,12,18,0 * * *": "daily-sprint-post-race.yml",   // 15分後
   "5-59/15 * * * *": "auto-racing.yml"
 };
 

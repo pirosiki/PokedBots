@@ -14,8 +14,8 @@ const GITHUB_REPO = "PokedBots";
 const CRON_WORKFLOWS = {
   "*/15 * * * *": "auto-scavenge.yml",
   "30 5,11,17,23 * * *": "daily-sprint-pre-race.yml",   // 30分前
-  "15 6,12,18,0 * * *": "daily-sprint-post-race.yml",   // 15分後
-  "5-59/15 * * * *": "auto-event-registration.yml"      // レース登録
+  "15 6,12,18,0 * * *": "daily-sprint-post-race.yml"    // 15分後
+  // "5-59/15 * * * *": "auto-event-registration.yml"   // 停止中
 };
 
 async function triggerWorkflow(env, workflowFile) {

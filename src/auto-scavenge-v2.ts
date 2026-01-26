@@ -29,25 +29,16 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (20 total) - removed 9616 (not registered)
+// Target bots (11 total) - スカベンジ専用ボット
+// レース用ボット (TEAM_A/TEAM_B) は team-race-manager が管理
 const TARGET_BOTS = [
-  2669,  // Bach (Silent, Rating 54)
-  5143,  // ハチワレ (Silent, Rating 54)
-  2630,  // Noboru (Elite, Rating 44)
-  2441,  // neopirosiki (Elite, Rating 44)
   9381,
   5357,
   389,
   2957,
   2740,
-  // 9616 removed - not registered to account
-  820,
-  1866,
-  9888,
   879,
   2985,
-  9035,
-  9567,
   1038,
   8626,
   2542,

@@ -15,7 +15,8 @@ const GITHUB_REPO = "PokedBots";
 // - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
 const CRON_WORKFLOWS = {
   "*/15 * * * *": ["auto-scavenge.yml", "team-race-manager.yml"],  // 15分ごと
-  "30 5,11,17,23 * * *": ["register-daily-sprint.yml", "daily-sprint-pre-race.yml"]  // 各レース30分前
+  "30 5,11,17,23 * * *": ["register-daily-sprint.yml"],  // 各レース30分前（登録）
+  "45 5,11,17,23 * * *": ["daily-sprint-pre-race.yml"]   // 各レース15分前（メンテナンス）
 };
 
 async function triggerWorkflow(env, workflowFile) {

@@ -186,8 +186,14 @@ async function evictNonPriorityFromRepairBay(
 
   for (const bot of toEvict) {
     try {
-      await moveBot(client, bot.tokenIndex, "ChargingStation");
-      console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → ChargingStation (evicted)`);
+      // バッテリー100%なら待機、それ以外はChargingStation
+      if (bot.battery >= 100) {
+        await completeScavenging(client, bot.tokenIndex);
+        console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → Standby (evicted, battery full)`);
+      } else {
+        await moveBot(client, bot.tokenIndex, "ChargingStation");
+        console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → ChargingStation (evicted)`);
+      }
       evictedCount++;
     } catch (e) {
       console.log(`   ❌ #${bot.tokenIndex} ${bot.name} eviction failed: ${e}`);
@@ -215,6 +221,10 @@ function planScavengeMode(bot: BotStatus, repairBayCount: number): { task: BotTa
   if (zone === "ScrapHeaps" && (battery <= SCAVENGE_BATTERY_STOP || condition < SCAVENGE_CONDITION_MIN)) {
     if (condition < SCAVENGE_CONDITION_MIN && repairBayCount < MAX_REPAIR_BAY) {
       return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
+    }
+    // バッテリー100%なら待機（電気もったいない）
+    if (battery >= 100) {
+      return { task: { bot, action: "standby", reason: "waiting for RepairBay (bat full)" }, newRepairCount: repairBayCount };
     }
     return { task: { bot, action: "charging", reason: `Bat ${battery}%` }, newRepairCount: repairBayCount };
   }
@@ -250,6 +260,10 @@ function planScavengeMode(bot: BotStatus, repairBayCount: number): { task: BotTa
   }
   if (condition < SCAVENGE_CONDITION_MIN && repairBayCount < MAX_REPAIR_BAY) {
     return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
+  }
+  // バッテリー100%なら待機（電気もったいない）
+  if (battery >= 100) {
+    return { task: { bot, action: "none", reason: "waiting for RepairBay (bat full)" }, newRepairCount: repairBayCount };
   }
   return { task: { bot, action: "charging", reason: "need charge" }, newRepairCount: repairBayCount };
 }

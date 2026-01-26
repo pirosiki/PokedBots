@@ -36,6 +36,11 @@ const TEAM_B = [
   1209, 8895, 9035, 9567, 5028, 7680, 8636, 5400, 5441
 ];
 
+// スカベンジ専用ボット（レースには参加しない）
+const SCAVENGE_ONLY = [
+  9381, 5357, 389, 2957, 2740, 879, 2985, 1038, 8626, 2542, 9716
+];
+
 // レース時刻 (UTC時)
 const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
 const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
@@ -147,6 +152,49 @@ async function moveBot(client: PokedRaceMCPClient, tokenIndex: number, targetZon
   await completeScavenging(client, tokenIndex);
   await new Promise(resolve => setTimeout(resolve, 300));
   return startScavenging(client, tokenIndex, targetZone);
+}
+
+// PRE-RACEモード時にRepairBayを優先確保するため、他のボットを追い出す
+async function evictNonPriorityFromRepairBay(
+  client: PokedRaceMCPClient,
+  priorityTeam: number[],
+  neededSlots: number
+): Promise<number> {
+  // 追い出し対象: スカベンジ専用ボット + 他チーム
+  const otherTeam = priorityTeam === TEAM_A ? TEAM_B : TEAM_A;
+  const evictCandidates = [...SCAVENGE_ONLY, ...otherTeam];
+
+  // 対象ボットのステータスを並列取得
+  const statusPromises = evictCandidates.map(tokenIndex => getBotStatus(client, tokenIndex));
+  const results = await Promise.allSettled(statusPromises);
+  const statuses = results
+    .filter((r): r is PromiseFulfilledResult<BotStatus | null> => r.status === "fulfilled" && r.value !== null)
+    .map(r => r.value!);
+
+  // RepairBayにいるボットを抽出
+  const inRepairBay = statuses.filter(s => s.zone === "RepairBay");
+
+  if (inRepairBay.length === 0) {
+    return 0;
+  }
+
+  // 必要なスロット数だけ追い出す
+  const toEvict = inRepairBay.slice(0, neededSlots);
+  let evictedCount = 0;
+
+  console.log(`\n🚨 Evicting ${toEvict.length} bot(s) from RepairBay for priority team...`);
+
+  for (const bot of toEvict) {
+    try {
+      await moveBot(client, bot.tokenIndex, "ChargingStation");
+      console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → ChargingStation (evicted)`);
+      evictedCount++;
+    } catch (e) {
+      console.log(`   ❌ #${bot.tokenIndex} ${bot.name} eviction failed: ${e}`);
+    }
+  }
+
+  return evictedCount;
 }
 
 interface BotTask {
@@ -273,7 +321,18 @@ async function processTeam(
 
   console.log(`   Got ${statuses.length}/${teamBots.length} bot statuses`);
 
-  // RepairBay使用数をカウント
+  // PRE-RACEモード時: RepairBayが必要なボット数を確認し、必要なら他のボットを追い出す
+  if (isPreRace) {
+    const needRepair = statuses.filter(s => s.condition < RACE_CONDITION_MIN && s.zone !== "RepairBay");
+    const currentInRepairBay = statuses.filter(s => s.zone === "RepairBay").length;
+    const neededSlots = Math.max(0, needRepair.length - (MAX_REPAIR_BAY - currentInRepairBay));
+
+    if (neededSlots > 0) {
+      await evictNonPriorityFromRepairBay(client, teamBots, neededSlots);
+    }
+  }
+
+  // RepairBay使用数をカウント（このチームのボットのみ）
   let repairBayCount = statuses.filter(s => s.zone === "RepairBay").length;
 
   // タスク計画

@@ -1,10 +1,11 @@
 /**
- * Register Daily Sprint Challenge
+ * Register Daily Sprint Challenge (Team System)
  *
- * 固定メンバーを次のDaily sprint challengeに登録する
- * 手動実行: npm run register-daily-sprint
+ * 2チーム制でDaily sprint challengeに登録
+ * - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC) のレースに登録
+ * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC) のレースに登録
  *
- * 高速化: 並列実行 + 失敗時は個別リトライ
+ * 各チームのレース30分前に実行される
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -15,19 +16,21 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// 固定メンバー（25体）
-const TARGET_NAMES = [
-  "Hachiware", "Usagi", "らっこ", "うさぎ", "TAGGR",
-  "Nora", "SonicBlue", "Ged", "Wasabi", "Bot #7486",
-  "Motoko", "ちいかわ", "G-Max", "Char", "Papuwa",
-  "Matai", "StraySheep", "Kafka", "クラムボン", "Guevara",
-  "Noir", "Chiikawa", "仙台牛タン", "ねじまき鳥", "厚切り牛タン"
+// Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
+const TEAM_A = [
+  433, 2669, 5136, 6152, 9943, 2632, 2441, 9888, 7098,
+  758, 1170, 3535, 9048, 2475, 3406, 406, 8868, 631
 ];
 
-interface BotInfo {
-  tokenIndex: number;
-  name: string;
-}
+// Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
+const TEAM_B = [
+  5677, 8288, 5143, 1203, 820, 1315, 2630, 1866, 7486,
+  1209, 8895, 9035, 9567, 5028, 7680, 8636, 5400, 5441
+];
+
+// レース時刻 (UTC時)
+const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
+const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
 
 interface EventInfo {
   eventId: number;
@@ -36,35 +39,36 @@ interface EventInfo {
   minutesUntilStart: number;
 }
 
-async function getAllBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
-  console.log("📋 Fetching all bots...");
+function getCurrentTeam(): { name: string; bots: number[]; raceHours: number[] } {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
 
-  const result = await client.callTool("garage_list_my_pokedbots", {});
-
-  if (!result || !result.content || !result.content[0] || !result.content[0].text) {
-    throw new Error("Failed to get bot list");
+  // 各チームのレースまでの時間を計算
+  function getMinutesToRace(raceHours: number[]): number {
+    const currentTotalMinutes = hour * 60 + minute;
+    let minMinutes = Infinity;
+    for (const raceHour of raceHours) {
+      const raceTotalMinutes = raceHour * 60;
+      let diff = raceTotalMinutes - currentTotalMinutes;
+      if (diff <= 0) diff += 24 * 60;
+      if (diff < minMinutes) minMinutes = diff;
+    }
+    return minMinutes;
   }
 
-  const responseText = result.content[0].text;
-  const bots: BotInfo[] = [];
+  const minutesToA = getMinutesToRace(TEAM_A_RACE_HOURS);
+  const minutesToB = getMinutesToRace(TEAM_B_RACE_HOURS);
 
-  const botBlocks = responseText.split(/(?=🏎️ PokedBot #)/g).filter((b: string) => b.includes('PokedBot #'));
-
-  for (const block of botBlocks) {
-    const tokenMatch = block.match(/🏎️ PokedBot #(\d+)(?: "([^"]+)")?/);
-    if (!tokenMatch) continue;
-
-    const tokenIndex = parseInt(tokenMatch[1]);
-    const name = tokenMatch[2] || `Bot #${tokenIndex}`;
-
-    bots.push({ tokenIndex, name });
+  // 直近のレースがあるチームを選択
+  if (minutesToA <= minutesToB) {
+    return { name: "Team A", bots: TEAM_A, raceHours: TEAM_A_RACE_HOURS };
+  } else {
+    return { name: "Team B", bots: TEAM_B, raceHours: TEAM_B_RACE_HOURS };
   }
-
-  console.log(`✅ Found ${bots.length} total bots`);
-  return bots;
 }
 
-async function getNextDailySprint(client: PokedRaceMCPClient): Promise<EventInfo | null> {
+async function getNextDailySprint(client: PokedRaceMCPClient, raceHours: number[]): Promise<EventInfo | null> {
   console.log("📅 Looking for next Daily sprint challenge...");
 
   const result = await client.callTool("racing_list_events", {});
@@ -88,11 +92,14 @@ async function getNextDailySprint(client: PokedRaceMCPClient): Promise<EventInfo
     const eventName = eventIdMatch[2].trim();
     const startTime = new Date(startTimeMatch[1]);
     const minutesUntilStart = Math.floor((startTime.getTime() - now.getTime()) / 60000);
+    const eventHour = startTime.getUTCHours();
 
-    // Daily sprint challengeを探す（登録締切15分前まで）
-    if (eventName.toLowerCase().includes("daily sprint challenge") && minutesUntilStart > 15) {
+    // Daily sprint challengeで、このチームのレース時刻に一致するもの
+    if (eventName.toLowerCase().includes("daily sprint challenge") &&
+        raceHours.includes(eventHour) &&
+        minutesUntilStart > 15 && minutesUntilStart <= 60) {
       console.log(`✅ Found: Event #${eventId} - ${eventName}`);
-      console.log(`   Starts in ${minutesUntilStart} minutes`);
+      console.log(`   Starts at ${startTime.toISOString()} (in ${minutesUntilStart} minutes)`);
       return { eventId, eventName, startTime, minutesUntilStart };
     }
   }
@@ -126,8 +133,7 @@ async function getExistingRegistrations(client: PokedRaceMCPClient, eventId: num
 async function registerBot(
   client: PokedRaceMCPClient,
   eventId: number,
-  tokenIndex: number,
-  botName: string
+  tokenIndex: number
 ): Promise<boolean> {
   try {
     const result = await client.callTool("racing_register_for_event", {
@@ -136,14 +142,10 @@ async function registerBot(
     });
 
     if (result.isError) {
-      console.log(`   ❌ ${botName}: ${result.content?.[0]?.text || "Failed"}`);
       return false;
     }
-
-    console.log(`   ✅ ${botName}`);
     return true;
-  } catch (error) {
-    console.log(`   ❌ ${botName}: ${error}`);
+  } catch {
     return false;
   }
 }
@@ -155,41 +157,20 @@ async function main() {
     await client.connect(SERVER_URL, API_KEY);
 
     console.log("\n🏁 ========================================");
-    console.log("🏁  REGISTER DAILY SPRINT CHALLENGE");
+    console.log("🏁  REGISTER DAILY SPRINT (TEAM SYSTEM)");
     console.log("🏁 ========================================\n");
+    console.log(`📅 ${new Date().toISOString()}`);
 
-    // 全ボット取得
-    const allBots = await getAllBots(client);
-
-    // 対象ボットをフィルタ
-    const targetBots = allBots.filter(bot =>
-      TARGET_NAMES.some(name =>
-        bot.name.toLowerCase() === name.toLowerCase() ||
-        bot.name.includes(name) ||
-        name.includes(bot.name)
-      )
-    );
-
-    console.log(`\n🎯 Target bots: ${targetBots.length}/${TARGET_NAMES.length}`);
-
-    // マッチしなかったボットを表示
-    const matchedNames = targetBots.map(b => b.name.toLowerCase());
-    const notFound = TARGET_NAMES.filter(name =>
-      !targetBots.some(bot =>
-        bot.name.toLowerCase() === name.toLowerCase() ||
-        bot.name.includes(name) ||
-        name.includes(bot.name)
-      )
-    );
-    if (notFound.length > 0) {
-      console.log(`⚠️  Not found: ${notFound.join(", ")}`);
-    }
+    // 現在のチームを判定
+    const team = getCurrentTeam();
+    console.log(`\n🎯 ${team.name}: ${team.bots.length} bots`);
+    console.log(`   Race hours (UTC): ${team.raceHours.join(", ")}`);
 
     // 次のDaily sprint challengeを探す
-    const event = await getNextDailySprint(client);
+    const event = await getNextDailySprint(client, team.raceHours);
 
     if (!event) {
-      console.log("\n⚠️  No upcoming Daily sprint challenge found");
+      console.log("\n⚠️  No upcoming Daily sprint challenge found for this team");
       await client.close();
       return;
     }
@@ -199,59 +180,64 @@ async function main() {
     console.log(`\n📝 Already registered: ${alreadyRegistered.length} bots`);
 
     // 未登録のボットを登録
-    const toRegister = targetBots.filter(bot => !alreadyRegistered.includes(bot.tokenIndex));
+    const toRegister = team.bots.filter(tokenIndex => !alreadyRegistered.includes(tokenIndex));
 
     if (toRegister.length === 0) {
-      console.log("\n✅ All target bots already registered!");
+      console.log("\n✅ All team bots already registered!");
       await client.close();
       return;
     }
 
-    console.log(`\n📝 Registering ${toRegister.length} bots for Event #${event.eventId} in parallel...`);
+    console.log(`\n📝 Registering ${toRegister.length} bots for Event #${event.eventId}...`);
 
     // 並列実行
-    const registerPromises = toRegister.map(async (bot) => {
+    const registerPromises = toRegister.map(async (tokenIndex) => {
       try {
         const result = await client.callTool("racing_register_for_event", {
           event_id: event.eventId,
-          token_index: bot.tokenIndex,
+          token_index: tokenIndex,
         });
         if (result.isError) {
-          return { bot, success: false, error: result.content?.[0]?.text };
+          return { tokenIndex, success: false, error: result.content?.[0]?.text };
         }
-        return { bot, success: true };
+        return { tokenIndex, success: true };
       } catch (e) {
-        return { bot, success: false, error: String(e) };
+        return { tokenIndex, success: false, error: String(e) };
       }
     });
 
     const results = await Promise.allSettled(registerPromises);
 
-    const succeeded: BotInfo[] = [];
-    const failed: { bot: BotInfo; error?: string }[] = [];
+    const succeeded: number[] = [];
+    const failed: { tokenIndex: number; error?: string }[] = [];
 
     for (const result of results) {
       if (result.status === "fulfilled") {
         if (result.value.success) {
-          succeeded.push(result.value.bot);
+          succeeded.push(result.value.tokenIndex);
         } else {
-          failed.push({ bot: result.value.bot, error: result.value.error });
+          failed.push({ tokenIndex: result.value.tokenIndex, error: result.value.error });
         }
       }
     }
 
     // 成功をログ
-    for (const bot of succeeded) {
-      console.log(`   ✅ ${bot.name}`);
+    for (const tokenIndex of succeeded) {
+      console.log(`   ✅ #${tokenIndex}`);
     }
 
     // 失敗したボットを個別リトライ
     let retrySuccess = 0;
     if (failed.length > 0) {
       console.log(`\n⚠️ ${failed.length} failed, retrying sequentially...`);
-      for (const { bot } of failed) {
-        const ok = await registerBot(client, event.eventId, bot.tokenIndex, bot.name);
-        if (ok) retrySuccess++;
+      for (const { tokenIndex } of failed) {
+        const ok = await registerBot(client, event.eventId, tokenIndex);
+        if (ok) {
+          console.log(`   ✅ #${tokenIndex} (retry)`);
+          retrySuccess++;
+        } else {
+          console.log(`   ❌ #${tokenIndex}`);
+        }
       }
     }
 

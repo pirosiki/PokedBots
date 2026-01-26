@@ -1,15 +1,14 @@
 /**
- * Daily Sprint Pre-Race Maintenance
+ * Daily Sprint Pre-Race Maintenance (Team System)
  *
- * レース開始15分前に実行:
+ * 各チームのレース30分前に実行:
  * 1. バッテリー < 100% → 有料リチャージ (0.1 ICP)
  * 2. コンディション < 100% → 有料リペア (0.05 ICP)
  *
  * 順番: リチャージ → リペア = Perfect Tune獲得
  *
- * 対象: Daily Sprint固定メンバー25体
- *
- * 高速化: 並列実行 + 失敗時は個別リトライ
+ * - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
+ * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -20,91 +19,79 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Daily Sprint固定メンバー（25体）- register-daily-sprint.tsと同じ
-const TARGET_NAMES = [
-  "Hachiware", "Usagi", "らっこ", "うさぎ", "TAGGR",
-  "Nora", "SonicBlue", "Ged", "Wasabi", "Bot #7486",
-  "Motoko", "ちいかわ", "G-Max", "Char", "Papuwa",
-  "Matai", "StraySheep", "Kafka", "クラムボン", "Guevara",
-  "Noir", "Chiikawa", "仙台牛タン", "ねじまき鳥", "厚切り牛タン"
+// Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
+const TEAM_A = [
+  433, 2669, 5136, 6152, 9943, 2632, 2441, 9888, 7098,
+  758, 1170, 3535, 9048, 2475, 3406, 406, 8868, 631
 ];
+
+// Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
+const TEAM_B = [
+  5677, 8288, 5143, 1203, 820, 1315, 2630, 1866, 7486,
+  1209, 8895, 9035, 9567, 5028, 7680, 8636, 5400, 5441
+];
+
+// レース時刻 (UTC時)
+const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
+const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
 
 interface BotInfo {
   tokenIndex: number;
-  name: string;
   battery: number;
   condition: number;
   zone: string | null;
 }
 
-async function getTargetBots(client: PokedRaceMCPClient): Promise<BotInfo[]> {
-  console.log("📋 Fetching target bots...");
+function getCurrentTeam(): { name: string; bots: number[]; raceHours: number[] } {
+  const now = new Date();
+  const hour = now.getUTCHours();
+  const minute = now.getUTCMinutes();
 
-  const result = await client.callTool("garage_list_my_pokedbots", {});
-
-  if (!result || !result.content || !result.content[0] || !result.content[0].text) {
-    throw new Error("Failed to get bot list");
-  }
-
-  const responseText = result.content[0].text;
-  const botBlocks = responseText.split(/(?=🏎️ PokedBot #)/g).filter((b: string) => b.includes('PokedBot #'));
-
-  // 対象ボットのtokenIndexとnameを抽出
-  const targetBotBasics: { tokenIndex: number; name: string }[] = [];
-
-  for (const block of botBlocks) {
-    const tokenMatch = block.match(/🏎️ PokedBot #(\d+)(?: "([^"]+)")?/);
-    if (!tokenMatch) continue;
-
-    const tokenIndex = parseInt(tokenMatch[1]);
-    const name = tokenMatch[2] || `Bot #${tokenIndex}`;
-
-    // 対象メンバーかチェック
-    const isTarget = TARGET_NAMES.some(targetName =>
-      name.toLowerCase() === targetName.toLowerCase() ||
-      name.includes(targetName) ||
-      targetName.includes(name)
-    );
-
-    if (isTarget) {
-      targetBotBasics.push({ tokenIndex, name });
+  function getMinutesToRace(raceHours: number[]): number {
+    const currentTotalMinutes = hour * 60 + minute;
+    let minMinutes = Infinity;
+    for (const raceHour of raceHours) {
+      const raceTotalMinutes = raceHour * 60;
+      let diff = raceTotalMinutes - currentTotalMinutes;
+      if (diff <= 0) diff += 24 * 60;
+      if (diff < minMinutes) minMinutes = diff;
     }
+    return minMinutes;
   }
 
-  // 並列で詳細を取得
-  console.log(`📡 Fetching details for ${targetBotBasics.length} bots in parallel...`);
-  const detailPromises = targetBotBasics.map(async (bot) => {
-    try {
-      const detailResult = await client.callTool("garage_get_robot_details", { token_index: bot.tokenIndex });
-      if (!detailResult || !detailResult.content || !detailResult.content[0] || !detailResult.content[0].text) {
-        return null;
-      }
+  const minutesToA = getMinutesToRace(TEAM_A_RACE_HOURS);
+  const minutesToB = getMinutesToRace(TEAM_B_RACE_HOURS);
 
-      const data = JSON.parse(detailResult.content[0].text);
-      const battery = data.condition?.battery || 0;
-      const condition = data.condition?.condition || 0;
+  if (minutesToA <= minutesToB) {
+    return { name: "Team A", bots: TEAM_A, raceHours: TEAM_A_RACE_HOURS };
+  } else {
+    return { name: "Team B", bots: TEAM_B, raceHours: TEAM_B_RACE_HOURS };
+  }
+}
 
-      let zone: string | null = null;
-      if (data.active_scavenging &&
-          data.active_scavenging.status &&
-          typeof data.active_scavenging.status === "string" &&
-          data.active_scavenging.status.includes("Active")) {
-        zone = data.active_scavenging.zone || null;
-      }
-
-      return { tokenIndex: bot.tokenIndex, name: bot.name, battery, condition, zone } as BotInfo;
-    } catch {
+async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Promise<BotInfo | null> {
+  try {
+    const result = await client.callTool("garage_get_robot_details", { token_index: tokenIndex });
+    if (!result || !result.content || !result.content[0] || !result.content[0].text) {
       return null;
     }
-  });
 
-  const results = await Promise.allSettled(detailPromises);
-  const bots: BotInfo[] = results
-    .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
-    .map(r => r.value!);
+    const data = JSON.parse(result.content[0].text);
+    const battery = data.condition?.battery || 0;
+    const condition = data.condition?.condition || 0;
 
-  console.log(`✅ Found ${bots.length}/${TARGET_NAMES.length} target bots`);
-  return bots;
+    let zone: string | null = null;
+    if (data.active_scavenging &&
+        data.active_scavenging.status &&
+        typeof data.active_scavenging.status === "string" &&
+        data.active_scavenging.status.includes("Active")) {
+      zone = data.active_scavenging.zone || null;
+    }
+
+    return { tokenIndex, battery, condition, zone };
+  } catch {
+    return null;
+  }
 }
 
 async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number): Promise<boolean> {
@@ -123,40 +110,6 @@ async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number
   }
 }
 
-async function rechargeBot(client: PokedRaceMCPClient, tokenIndex: number, name: string): Promise<boolean> {
-  try {
-    console.log(`   🔋 ${name}: Recharging... (0.1 ICP)`);
-    const result = await client.callTool("garage_recharge_robot", { token_index: tokenIndex });
-    if (result.isError) {
-      const errorMsg = result.content?.[0]?.text || "Unknown error";
-      console.log(`   ❌ ${name}: ${errorMsg}`);
-      return false;
-    }
-    console.log(`   ✅ ${name}: Recharged`);
-    return true;
-  } catch (error) {
-    console.log(`   ❌ ${name}: ${error}`);
-    return false;
-  }
-}
-
-async function repairBot(client: PokedRaceMCPClient, tokenIndex: number, name: string): Promise<boolean> {
-  try {
-    console.log(`   🔧 ${name}: Repairing... (0.05 ICP)`);
-    const result = await client.callTool("garage_repair_robot", { token_index: tokenIndex });
-    if (result.isError) {
-      const errorMsg = result.content?.[0]?.text || "Unknown error";
-      console.log(`   ❌ ${name}: ${errorMsg}`);
-      return false;
-    }
-    console.log(`   ✅ ${name}: Repaired → Perfect Tune!`);
-    return true;
-  } catch (error) {
-    console.log(`   ❌ ${name}: ${error}`);
-    return false;
-  }
-}
-
 async function main() {
   const client = new PokedRaceMCPClient();
 
@@ -164,23 +117,35 @@ async function main() {
     await client.connect(SERVER_URL, API_KEY);
 
     console.log("\n🏁 ========================================");
-    console.log("🏁  DAILY SPRINT PRE-RACE MAINTENANCE");
+    console.log("🏁  PRE-RACE MAINTENANCE (TEAM SYSTEM)");
     console.log("🏁 ========================================\n");
-    console.log(`📅 ${new Date().toISOString()}\n`);
+    console.log(`📅 ${new Date().toISOString()}`);
 
-    // 対象ボット取得
-    const bots = await getTargetBots(client);
+    // 現在のチームを判定
+    const team = getCurrentTeam();
+    console.log(`\n🎯 ${team.name}: ${team.bots.length} bots`);
+    console.log(`   Race hours (UTC): ${team.raceHours.join(", ")}`);
+
+    // ステータス取得（並列）
+    console.log("\n📡 Fetching bot statuses...");
+    const statusPromises = team.bots.map(tokenIndex => getBotStatus(client, tokenIndex));
+    const results = await Promise.allSettled(statusPromises);
+    const bots: BotInfo[] = results
+      .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
+      .map(r => r.value!);
+
+    console.log(`✅ Got ${bots.length}/${team.bots.length} bot statuses`);
 
     if (bots.length === 0) {
-      console.log("⚠️  No target bots found");
+      console.log("⚠️  No bots found");
       await client.close();
       return;
     }
 
-    // Phase 0: スカベンジング中のボットを呼び戻す（並列）
+    // Phase 0: スカベンジング中のボットを呼び戻す
     const scavengingBots = bots.filter(b => b.zone !== null);
     if (scavengingBots.length > 0) {
-      console.log(`📥 Phase 0: Recalling ${scavengingBots.length} bot(s) from scavenging in parallel...`);
+      console.log(`\n📥 Phase 0: Recalling ${scavengingBots.length} bot(s) from scavenging...`);
       const recallPromises = scavengingBots.map(async (bot) => {
         try {
           await completeScavenging(client, bot.tokenIndex);
@@ -189,39 +154,25 @@ async function main() {
           return { bot, success: false };
         }
       });
-      const recallResults = await Promise.allSettled(recallPromises);
-
-      // 失敗したボットをリトライ
-      const failedRecalls = recallResults
-        .filter((r): r is PromiseFulfilledResult<{bot: BotInfo, success: boolean}> =>
-          r.status === "fulfilled" && !r.value.success)
-        .map(r => r.value.bot);
-
-      if (failedRecalls.length > 0) {
-        console.log(`   ⚠️ ${failedRecalls.length} failed, retrying...`);
-        for (const bot of failedRecalls) {
-          await completeScavenging(client, bot.tokenIndex);
-        }
-      }
-      console.log(`   ✅ Recalled ${scavengingBots.length} bots`);
-      console.log("");
+      await Promise.allSettled(recallPromises);
+      console.log(`   ✅ Recalled`);
     }
 
     // 状態表示
-    console.log("📊 Current Status:");
+    console.log("\n📊 Current Status:");
     for (const bot of bots) {
       const batteryIcon = bot.battery < 100 ? "⚠️" : "✓";
       const condIcon = bot.condition < 100 ? "⚠️" : "✓";
-      console.log(`   ${batteryIcon}${condIcon} ${bot.name}: Battery=${bot.battery}%, Condition=${bot.condition}%`);
+      console.log(`   ${batteryIcon}${condIcon} #${bot.tokenIndex}: Battery=${bot.battery}%, Condition=${bot.condition}%`);
     }
 
     let rechargeCount = 0;
     let repairCount = 0;
 
-    // Phase 1: バッテリー < 100% → 有料リチャージ（並列）
+    // Phase 1: バッテリー < 100% → 有料リチャージ
     const needRecharge = bots.filter(b => b.battery < 100);
     if (needRecharge.length > 0) {
-      console.log(`\n🔋 Phase 1: Recharging ${needRecharge.length} bot(s) in parallel...`);
+      console.log(`\n🔋 Phase 1: Recharging ${needRecharge.length} bot(s)...`);
 
       const rechargePromises = needRecharge.map(async (bot) => {
         try {
@@ -237,40 +188,22 @@ async function main() {
 
       const rechargeResults = await Promise.allSettled(rechargePromises);
 
-      const succeeded: BotInfo[] = [];
-      const failed: { bot: BotInfo; error?: string }[] = [];
-
       for (const result of rechargeResults) {
-        if (result.status === "fulfilled") {
-          if (result.value.success) {
-            succeeded.push(result.value.bot);
-          } else {
-            failed.push({ bot: result.value.bot, error: result.value.error });
-          }
-        }
-      }
-
-      for (const bot of succeeded) {
-        console.log(`   ✅ ${bot.name}: Recharged`);
-        rechargeCount++;
-      }
-
-      // 失敗したボットを個別リトライ
-      if (failed.length > 0) {
-        console.log(`   ⚠️ ${failed.length} failed, retrying sequentially...`);
-        for (const { bot } of failed) {
-          const success = await rechargeBot(client, bot.tokenIndex, bot.name);
-          if (success) rechargeCount++;
+        if (result.status === "fulfilled" && result.value.success) {
+          console.log(`   ✅ #${result.value.bot.tokenIndex}: Recharged`);
+          rechargeCount++;
+        } else if (result.status === "fulfilled") {
+          console.log(`   ❌ #${result.value.bot.tokenIndex}: ${result.value.error}`);
         }
       }
     } else {
       console.log("\n✓ Phase 1: All bots have 100% battery");
     }
 
-    // Phase 2: コンディション < 100% → 有料リペア (Perfect Tune!)（並列）
+    // Phase 2: コンディション < 100% → 有料リペア
     const needRepair = bots.filter(b => b.condition < 100);
     if (needRepair.length > 0) {
-      console.log(`\n🔧 Phase 2: Repairing ${needRepair.length} bot(s) → Perfect Tune in parallel...`);
+      console.log(`\n🔧 Phase 2: Repairing ${needRepair.length} bot(s) → Perfect Tune...`);
 
       const repairPromises = needRepair.map(async (bot) => {
         try {
@@ -286,30 +219,12 @@ async function main() {
 
       const repairResults = await Promise.allSettled(repairPromises);
 
-      const succeeded: BotInfo[] = [];
-      const failed: { bot: BotInfo; error?: string }[] = [];
-
       for (const result of repairResults) {
-        if (result.status === "fulfilled") {
-          if (result.value.success) {
-            succeeded.push(result.value.bot);
-          } else {
-            failed.push({ bot: result.value.bot, error: result.value.error });
-          }
-        }
-      }
-
-      for (const bot of succeeded) {
-        console.log(`   ✅ ${bot.name}: Repaired → Perfect Tune!`);
-        repairCount++;
-      }
-
-      // 失敗したボットを個別リトライ
-      if (failed.length > 0) {
-        console.log(`   ⚠️ ${failed.length} failed, retrying sequentially...`);
-        for (const { bot } of failed) {
-          const success = await repairBot(client, bot.tokenIndex, bot.name);
-          if (success) repairCount++;
+        if (result.status === "fulfilled" && result.value.success) {
+          console.log(`   ✅ #${result.value.bot.tokenIndex}: Perfect Tune!`);
+          repairCount++;
+        } else if (result.status === "fulfilled") {
+          console.log(`   ❌ #${result.value.bot.tokenIndex}: ${result.value.error}`);
         }
       }
     } else {
@@ -328,7 +243,7 @@ async function main() {
       console.log(`   🌟 Perfect Tune applied to ${repairCount} bot(s)!`);
     }
 
-    console.log(`\n✅ Pre-race maintenance complete - Ready to race!`);
+    console.log(`\n✅ ${team.name} pre-race maintenance complete - Ready to race!`);
 
     await client.close();
   } catch (error) {

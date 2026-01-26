@@ -22,7 +22,8 @@
     "repair-racing": "tsx repair-racing-bots.ts",
     "charge-racing": "tsx charge-racing-bots.ts",
     "register-free-races": "tsx src/register-free-races.ts",
-    "special-race-prep": "tsx src/special-race-prep.ts"
+    "special-race-prep": "tsx src/special-race-prep.ts",
+    "team-race-manager": "tsx src/team-race-manager.ts"
   },
   "keywords": [
     "mcp",

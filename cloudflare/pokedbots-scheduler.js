@@ -9,13 +9,15 @@
 const GITHUB_OWNER = "pirosiki";
 const GITHUB_REPO = "PokedBots";
 
-// Cron → ワークフローのマッピング
-// レース時刻: 6:00, 12:00, 18:00, 0:00 UTC (15:00, 21:00, 3:00, 9:00 JST)
+// Cron → ワークフローのマッピング（配列で複数指定可能）
+// チーム制レース運用:
+// - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
+// - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
 const CRON_WORKFLOWS = {
-  "*/15 * * * *": "auto-scavenge.yml",
-  "30 5,11,17,23 * * *": "daily-sprint-pre-race.yml",   // 30分前
-  "15 6,12,18,0 * * *": "daily-sprint-post-race.yml"    // 15分後
-  // "5-59/15 * * * *": "auto-event-registration.yml"   // 停止中
+  "*/15 * * * *": ["auto-scavenge.yml", "team-race-manager.yml"],  // 15分ごと
+  // 旧バッチ（停止中、切り戻し用に残す）
+  // "30 5,11,17,23 * * *": ["register-daily-sprint.yml", "daily-sprint-pre-race.yml"],
+  // "*/15 * * * *": ["daily-sprint-post-race.yml"],
 };
 
 async function triggerWorkflow(env, workflowFile) {
@@ -47,23 +49,29 @@ export default {
 
     console.log(`[${timestamp}] Cron triggered: ${cron}`);
 
-    // Cronに対応するワークフローを取得
-    const workflowFile = CRON_WORKFLOWS[cron];
+    // Cronに対応するワークフローを取得（配列）
+    const workflows = CRON_WORKFLOWS[cron];
 
-    if (!workflowFile) {
+    if (!workflows || workflows.length === 0) {
       console.log(`Unknown cron: ${cron}`);
       return;
     }
 
-    console.log(`Triggering workflow: ${workflowFile}`);
+    // 全ワークフローを並列実行
+    const results = await Promise.all(
+      workflows.map(async (workflowFile) => {
+        console.log(`Triggering workflow: ${workflowFile}`);
+        const result = await triggerWorkflow(env, workflowFile);
+        if (result.success) {
+          console.log(`Successfully triggered ${workflowFile}`);
+        } else {
+          console.error(`Failed to trigger ${workflowFile}: status ${result.status}`);
+        }
+        return result;
+      })
+    );
 
-    const result = await triggerWorkflow(env, workflowFile);
-
-    if (result.success) {
-      console.log(`Successfully triggered ${workflowFile}`);
-    } else {
-      console.error(`Failed to trigger ${workflowFile}: status ${result.status}`);
-    }
+    console.log(`Triggered ${results.filter(r => r.success).length}/${workflows.length} workflows`);
   },
 
   // HTTP トリガー（手動実行用）

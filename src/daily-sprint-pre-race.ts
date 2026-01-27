@@ -3,9 +3,10 @@
  *
  * 各チームのレース30分前に実行:
  * 1. バッテリー < 100% → 有料リチャージ (0.1 ICP)
- * 2. コンディション < 100% → 有料リペア (0.05 ICP)
+ * 2. リチャージ後もバッテリー < 100% → Jolt (バッテリー放電)
+ * 3. コンディション < 100% → 有料リペア (0.05 ICP)
  *
- * 順番: リチャージ → リペア = Perfect Tune獲得
+ * 順番: リチャージ → Jolt → リペア = Perfect Tune獲得
  *
  * - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
  * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
@@ -110,6 +111,52 @@ async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number
   }
 }
 
+interface BatteryInfo {
+  id: number;
+  stored_kwh: number;
+  is_operational: boolean;
+}
+
+async function getUsableBatteries(client: PokedRaceMCPClient): Promise<BatteryInfo[]> {
+  try {
+    const result = await client.callTool("garage_list_batteries", {});
+    if (!result || !result.content || !result.content[0] || !result.content[0].text) {
+      return [];
+    }
+
+    const data = JSON.parse(result.content[0].text);
+    if (!data.batteries) return [];
+
+    // stored_kwhが多い順にソート。Joltには20 kWh必要だが、
+    // 足りなくなったら次のバッテリーに切り替える
+    return data.batteries
+      .filter((b: any) => b.stored_kwh > 0)
+      .sort((a: any, b: any) => b.stored_kwh - a.stored_kwh) // 容量が多い順
+      .map((b: any) => ({
+        id: b.id,
+        stored_kwh: b.stored_kwh,
+        is_operational: b.is_operational,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function joltBot(client: PokedRaceMCPClient, tokenIndex: number, batteryId: number): Promise<boolean> {
+  try {
+    const result = await client.callTool("garage_jolt_bot", {
+      token_index: tokenIndex,
+      battery_id: batteryId,
+    });
+    if (result.isError) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function main() {
   const client = new PokedRaceMCPClient();
 
@@ -167,6 +214,7 @@ async function main() {
     }
 
     let rechargeCount = 0;
+    let joltCount = 0;
     let repairCount = 0;
 
     // Phase 1: バッテリー < 100% → 有料リチャージ
@@ -198,6 +246,68 @@ async function main() {
       }
     } else {
       console.log("\n✓ Phase 1: All bots have 100% battery");
+    }
+
+    // Phase 1.5: リチャージ後もバッテリー < 100% → Jolt
+    // 再度ステータスを取得
+    console.log("\n📡 Re-checking battery levels...");
+    const recheckPromises = team.bots.map(tokenIndex => getBotStatus(client, tokenIndex));
+    const recheckResults = await Promise.allSettled(recheckPromises);
+    const recheckBots: BotInfo[] = recheckResults
+      .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
+      .map(r => r.value!);
+
+    const stillNeedCharge = recheckBots.filter(b => b.battery < 100);
+    if (stillNeedCharge.length > 0) {
+      console.log(`\n⚡ Phase 1.5: Jolting ${stillNeedCharge.length} bot(s) still under 100%...`);
+
+      // 使用可能なバッテリーを取得
+      let batteries = await getUsableBatteries(client);
+      console.log(`   Available batteries: ${batteries.length}`);
+
+      if (batteries.length > 0) {
+        for (const bot of stillNeedCharge) {
+          let currentBattery = bot.battery;
+          let joltAttempts = 0;
+          const maxJolts = 5; // 安全のため最大5回
+
+          while (currentBattery < 100 && joltAttempts < maxJolts) {
+            // バッテリー一覧を再取得
+            batteries = await getUsableBatteries(client);
+
+            if (batteries.length === 0) {
+              console.log(`   ⚠️  No more batteries available for #${bot.tokenIndex}`);
+              break;
+            }
+
+            // 現在のバッテリーを試す
+            const battery = batteries[0];
+            const success = await joltBot(client, bot.tokenIndex, battery.id);
+
+            if (success) {
+              joltAttempts++;
+              joltCount++;
+
+              // Jolt後のバッテリーレベルを確認
+              const updatedStatus = await getBotStatus(client, bot.tokenIndex);
+              currentBattery = updatedStatus?.battery ?? 100;
+              console.log(`   ⚡ #${bot.tokenIndex}: Jolted x${joltAttempts} (Battery #${battery.id}) → ${currentBattery}%`);
+
+              if (currentBattery >= 100) {
+                console.log(`   ✅ #${bot.tokenIndex}: Fully charged!`);
+              }
+            } else {
+              // 失敗したら次のバッテリーに切り替え
+              console.log(`   ⚠️  Battery #${battery.id} exhausted, trying next...`);
+              // 再取得で自動的に次のバッテリーが先頭に来る
+            }
+          }
+        }
+      } else {
+        console.log(`   ⚠️  No operational batteries available for jolting`);
+      }
+    } else {
+      console.log("✓ Phase 1.5: All bots now have 100% battery");
     }
 
     // Phase 2: コンディション < 100% → 有料リペア
@@ -237,6 +347,9 @@ async function main() {
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     console.log("📋 Summary:");
     console.log(`   Recharged: ${rechargeCount}/${needRecharge.length}`);
+    if (joltCount > 0) {
+      console.log(`   Jolted: ${joltCount}`);
+    }
     console.log(`   Repaired: ${repairCount}/${needRepair.length}`);
     console.log(`   Total cost: ${totalCost.toFixed(2)} ICP (+ fees)`);
     if (repairCount > 0) {

@@ -142,18 +142,26 @@ async function getUsableBatteries(client: PokedRaceMCPClient): Promise<BatteryIn
   }
 }
 
-async function joltBot(client: PokedRaceMCPClient, tokenIndex: number, batteryId: number): Promise<boolean> {
+interface JoltResult {
+  success: boolean;
+  error?: string;
+  isBatteryExhausted?: boolean;
+}
+
+async function joltBot(client: PokedRaceMCPClient, tokenIndex: number, batteryId: number): Promise<JoltResult> {
   try {
     const result = await client.callTool("garage_jolt_bot", {
       token_index: tokenIndex,
       battery_id: batteryId,
     });
     if (result.isError) {
-      return false;
+      const errorText = result.content?.[0]?.text || "";
+      const isBatteryExhausted = errorText.includes("insufficient") || errorText.includes("not enough");
+      return { success: false, error: errorText, isBatteryExhausted };
     }
-    return true;
-  } catch {
-    return false;
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: String(e) };
   }
 }
 
@@ -189,21 +197,20 @@ async function main() {
       return;
     }
 
-    // Phase 0: スカベンジング中のボットを呼び戻す
-    const scavengingBots = bots.filter(b => b.zone !== null);
-    if (scavengingBots.length > 0) {
-      console.log(`\n📥 Phase 0: Recalling ${scavengingBots.length} bot(s) from scavenging...`);
-      const recallPromises = scavengingBots.map(async (bot) => {
-        try {
-          await completeScavenging(client, bot.tokenIndex);
-          return { bot, success: true };
-        } catch {
-          return { bot, success: false };
-        }
-      });
-      await Promise.allSettled(recallPromises);
-      console.log(`   ✅ Recalled`);
-    }
+    // Phase 0: 全ボットのスカベンジングを完了させる（念のため全員）
+    console.log(`\n📥 Phase 0: Recalling all ${bots.length} bot(s) from any activity...`);
+    const recallPromises = bots.map(async (bot) => {
+      try {
+        await completeScavenging(client, bot.tokenIndex);
+        return { bot, success: true };
+      } catch {
+        return { bot, success: false };
+      }
+    });
+    await Promise.allSettled(recallPromises);
+    // 少し待機してスカベンジング完了を確実に
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`   ✅ Recalled`);
 
     // 状態表示
     console.log("\n📊 Current Status:");
@@ -266,14 +273,19 @@ async function main() {
       console.log(`   Available batteries: ${batteries.length}`);
 
       if (batteries.length > 0) {
+        const exhaustedBatteries = new Set<number>(); // 使い果たしたバッテリーを追跡
+
         for (const bot of stillNeedCharge) {
           let currentBattery = bot.battery;
           let joltAttempts = 0;
+          let failureCount = 0;
           const maxJolts = 5; // 安全のため最大5回
+          const maxFailures = 3; // 連続失敗の上限
 
-          while (currentBattery < 100 && joltAttempts < maxJolts) {
-            // バッテリー一覧を再取得
+          while (currentBattery < 100 && joltAttempts < maxJolts && failureCount < maxFailures) {
+            // バッテリー一覧を再取得（使い果たしたバッテリーを除外）
             batteries = await getUsableBatteries(client);
+            batteries = batteries.filter(b => !exhaustedBatteries.has(b.id));
 
             if (batteries.length === 0) {
               console.log(`   ⚠️  No more batteries available for #${bot.tokenIndex}`);
@@ -282,11 +294,12 @@ async function main() {
 
             // 現在のバッテリーを試す
             const battery = batteries[0];
-            const success = await joltBot(client, bot.tokenIndex, battery.id);
+            const result = await joltBot(client, bot.tokenIndex, battery.id);
 
-            if (success) {
+            if (result.success) {
               joltAttempts++;
               joltCount++;
+              failureCount = 0; // リセット
 
               // Jolt後のバッテリーレベルを確認
               const updatedStatus = await getBotStatus(client, bot.tokenIndex);
@@ -297,10 +310,18 @@ async function main() {
                 console.log(`   ✅ #${bot.tokenIndex}: Fully charged!`);
               }
             } else {
-              // 失敗したら次のバッテリーに切り替え
-              console.log(`   ⚠️  Battery #${battery.id} exhausted, trying next...`);
-              // 再取得で自動的に次のバッテリーが先頭に来る
+              failureCount++;
+              if (result.isBatteryExhausted) {
+                console.log(`   ⚠️  Battery #${battery.id} exhausted, trying next...`);
+                exhaustedBatteries.add(battery.id);
+              } else {
+                console.log(`   ❌ #${bot.tokenIndex}: Jolt failed - ${result.error}`);
+              }
             }
+          }
+
+          if (failureCount >= maxFailures) {
+            console.log(`   ❌ #${bot.tokenIndex}: Too many failures, skipping`);
           }
         }
       } else {

@@ -1,28 +1,17 @@
 /**
  * Team Race Manager
  *
- * 2チーム制のレースボット運用バッチ
+ * 2チーム制のレースボット運用バッチ（15分ごと実行）
  * - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
  * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
  *
  * 運用フロー:
- * 1. レース後〜レース3時間前: スカベンジングモード
- *    - Bat≥75% & Cond≥70% → ScrapHeaps
- *    - Bat<75% → ChargingStation（効率維持のため）
- *    - Cond<70% → RepairBay
- *    - 回復したら再度ScrapHeaps
+ * 1. バッテリー < 100% → ChargingStation（100%まで充電）
+ * 2. バッテリー 100% → ScrapHeaps（スカベンジング）
+ * 3. バッテリー or コンディション < 10% → RepairBay（Cond 70%まで）→ 待機
  *
- * 2. レース3時間前〜15分前: バッテリー消費モード
- *    - チャージしない（オーバーチャージボーナスのため）
- *    - Cond<70% → RepairBay（コンディション維持）
- *    - Bat≤8% → 撤退して待機
- *    - Cond≥70% & Bat>8% → ScrapHeaps継続
- *    - RepairBay完了後 → 待機
- *
- * 3. レース15分前: pre-race maintenance (別バッチ)
- *    - 有料リチャージ（0%からでオーバーチャージMAX）
- *    - Joltで100%に
- *    - 有料リペア → Perfect Tune
+ * レース15分前は別バッチ（daily-sprint-pre-race）で:
+ * - 有料リチャージ → Jolt → 有料リペア → Perfect Tune
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -45,22 +34,10 @@ const TEAM_B = [
   1209, 8895, 9035, 9567, 5028, 7680, 8636, 5400, 5441
 ];
 
-// スカベンジ専用ボット（レースには参加しない）
-const SCAVENGE_ONLY = [
-  9381, 5357, 389, 2957, 2740, 879, 2985, 1038, 8626, 2542, 9716
-];
-
-// レース時刻 (UTC時)
-const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
-const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
-
 // 閾値
 const MAX_REPAIR_BAY = 4;
-const SCAVENGE_BATTERY_MIN = 75;     // スカベンジ継続に必要（効率維持）
-const SCAVENGE_CONDITION_MIN = 70;   // スカベンジ継続に必要
-const SCAVENGE_BATTERY_CHARGE = 75;  // これ以下でChargingStation
-const PRE_RACE_HOURS = 3;            // レース何時間前からバッテリー消費モード
-const PRE_RACE_BATTERY_STOP = 8;     // PRE-RACEモードでのバッテリー撤退ライン
+const CRITICAL_THRESHOLD = 10;    // これ以下で撤退
+const REPAIR_TARGET = 70;         // 撤退後のリペア目標
 
 interface BotStatus {
   tokenIndex: number;
@@ -68,33 +45,6 @@ interface BotStatus {
   battery: number;
   condition: number;
   zone: string | null;
-}
-
-function getMinutesToNextRace(raceHours: number[]): number {
-  const now = new Date();
-  const currentHour = now.getUTCHours();
-  const currentMinute = now.getUTCMinutes();
-  const currentTotalMinutes = currentHour * 60 + currentMinute;
-
-  let minMinutes = Infinity;
-
-  for (const raceHour of raceHours) {
-    const raceTotalMinutes = raceHour * 60;
-    let diff = raceTotalMinutes - currentTotalMinutes;
-    if (diff <= 0) {
-      diff += 24 * 60; // 次の日
-    }
-    if (diff < minMinutes) {
-      minMinutes = diff;
-    }
-  }
-
-  return minMinutes;
-}
-
-function isPreRaceMode(raceHours: number[]): boolean {
-  const minutesToRace = getMinutesToNextRace(raceHours);
-  return minutesToRace <= PRE_RACE_HOURS * 60;
 }
 
 async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Promise<BotStatus | null> {
@@ -162,173 +112,59 @@ async function moveBot(client: PokedRaceMCPClient, tokenIndex: number, targetZon
   return startScavenging(client, tokenIndex, targetZone);
 }
 
-// PRE-RACEモード時にRepairBayを優先確保するため、他のボットを追い出す
-async function evictNonPriorityFromRepairBay(
-  client: PokedRaceMCPClient,
-  priorityTeam: number[],
-  neededSlots: number
-): Promise<number> {
-  // 追い出し対象: スカベンジ専用ボット + 他チーム
-  const otherTeam = priorityTeam === TEAM_A ? TEAM_B : TEAM_A;
-  const evictCandidates = [...SCAVENGE_ONLY, ...otherTeam];
-
-  // 対象ボットのステータスを並列取得
-  const statusPromises = evictCandidates.map(tokenIndex => getBotStatus(client, tokenIndex));
-  const results = await Promise.allSettled(statusPromises);
-  const statuses = results
-    .filter((r): r is PromiseFulfilledResult<BotStatus | null> => r.status === "fulfilled" && r.value !== null)
-    .map(r => r.value!);
-
-  // RepairBayにいるボットを抽出
-  const inRepairBay = statuses.filter(s => s.zone === "RepairBay");
-
-  if (inRepairBay.length === 0) {
-    return 0;
-  }
-
-  // 必要なスロット数だけ追い出す
-  const toEvict = inRepairBay.slice(0, neededSlots);
-  let evictedCount = 0;
-
-  console.log(`\n🚨 Evicting ${toEvict.length} bot(s) from RepairBay for priority team...`);
-
-  for (const bot of toEvict) {
-    try {
-      // バッテリー100%なら待機、それ以外はChargingStation
-      if (bot.battery >= 100) {
-        await completeScavenging(client, bot.tokenIndex);
-        console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → Standby (evicted, battery full)`);
-      } else {
-        await moveBot(client, bot.tokenIndex, "ChargingStation");
-        console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → ChargingStation (evicted)`);
-      }
-      evictedCount++;
-    } catch (e) {
-      console.log(`   ❌ #${bot.tokenIndex} ${bot.name} eviction failed: ${e}`);
-    }
-  }
-
-  return evictedCount;
-}
-
 interface BotTask {
   bot: BotStatus;
   action: "scrapheaps" | "repair" | "charging" | "standby" | "none";
   reason: string;
 }
 
-function planScavengeMode(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
+function planBotAction(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
   const { battery, condition, zone } = bot;
 
-  // 既にScrapHeapsで条件OK → 継続
-  if (zone === "ScrapHeaps" && battery >= SCAVENGE_BATTERY_MIN && condition >= SCAVENGE_CONDITION_MIN) {
-    return { task: { bot, action: "none", reason: "scavenging OK" }, newRepairCount: repairBayCount };
-  }
-
-  // ScrapHeapsだがバッテリーorコンディション不足 → 停止
-  if (zone === "ScrapHeaps" && (battery < SCAVENGE_BATTERY_CHARGE || condition < SCAVENGE_CONDITION_MIN)) {
-    if (condition < SCAVENGE_CONDITION_MIN && repairBayCount < MAX_REPAIR_BAY) {
-      return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
-    }
-    if (battery < SCAVENGE_BATTERY_CHARGE) {
-      return { task: { bot, action: "charging", reason: `Bat ${battery}% < ${SCAVENGE_BATTERY_CHARGE}%` }, newRepairCount: repairBayCount };
-    }
-    return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
-  }
-
-  // RepairBay中 → 継続 or 次へ
-  if (zone === "RepairBay") {
-    if (condition >= SCAVENGE_CONDITION_MIN && battery >= SCAVENGE_BATTERY_MIN) {
-      return { task: { bot, action: "scrapheaps", reason: "repaired, ready" }, newRepairCount: repairBayCount };
-    }
-    if (condition >= SCAVENGE_CONDITION_MIN && battery < SCAVENGE_BATTERY_CHARGE) {
-      return { task: { bot, action: "charging", reason: "repaired, need charge" }, newRepairCount: repairBayCount };
-    }
-    return { task: { bot, action: "none", reason: `repairing (${condition}%)` }, newRepairCount: repairBayCount };
-  }
-
-  // ChargingStation中 → 継続 or 次へ
-  if (zone === "ChargingStation") {
-    if (battery >= SCAVENGE_BATTERY_MIN && condition >= SCAVENGE_CONDITION_MIN) {
-      return { task: { bot, action: "scrapheaps", reason: "charged, ready" }, newRepairCount: repairBayCount };
-    }
-    if (battery >= SCAVENGE_BATTERY_MIN && condition < SCAVENGE_CONDITION_MIN) {
+  // 優先1: バッテリー or コンディションが10%を切った → 撤退モード
+  if (battery < CRITICAL_THRESHOLD || condition < CRITICAL_THRESHOLD) {
+    // コンディション70%未満 → RepairBay
+    if (condition < REPAIR_TARGET) {
+      if (zone === "RepairBay") {
+        return { task: { bot, action: "none", reason: `critical repair (${condition}%)` }, newRepairCount: repairBayCount };
+      }
       if (repairBayCount < MAX_REPAIR_BAY) {
-        return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
+        return { task: { bot, action: "repair", reason: `Bat ${battery}% or Cond ${condition}% < ${CRITICAL_THRESHOLD}%` }, newRepairCount: repairBayCount + 1 };
+      }
+      // RepairBay満員 → 待機
+      if (zone !== null) {
+        return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
       }
       return { task: { bot, action: "none", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "none", reason: `charging (${battery}%)` }, newRepairCount: repairBayCount };
-  }
-
-  // アイドル状態 → 状態に応じて送る
-  if (battery >= SCAVENGE_BATTERY_MIN && condition >= SCAVENGE_CONDITION_MIN) {
-    return { task: { bot, action: "scrapheaps", reason: "ready" }, newRepairCount: repairBayCount };
-  }
-  if (condition < SCAVENGE_CONDITION_MIN && repairBayCount < MAX_REPAIR_BAY) {
-    return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
-  }
-  if (battery < SCAVENGE_BATTERY_CHARGE) {
-    return { task: { bot, action: "charging", reason: `Bat ${battery}% < ${SCAVENGE_BATTERY_CHARGE}%` }, newRepairCount: repairBayCount };
-  }
-  return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
-}
-
-function planPreRaceMode(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
-  const { battery, condition, zone } = bot;
-
-  // PRE-RACEモード: チャージしない（オーバーチャージボーナスのためバッテリーを消費させる）
-  // コンディション70%以上は維持
-
-  // コンディション不足 → RepairBay優先
-  if (condition < SCAVENGE_CONDITION_MIN) {
-    if (zone === "RepairBay") {
-      return { task: { bot, action: "none", reason: `repairing (${condition}%)` }, newRepairCount: repairBayCount };
-    }
-    if (repairBayCount < MAX_REPAIR_BAY) {
-      return { task: { bot, action: "repair", reason: `Cond ${condition}%` }, newRepairCount: repairBayCount + 1 };
-    }
-    // RepairBay満 → 待機
+    // コンディション70%以上 → 待機
     if (zone !== null) {
-      return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
+      return { task: { bot, action: "standby", reason: `critical standby (Bat ${battery}%)` }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "none", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "none", reason: `standby (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: repairBayCount };
   }
 
-  // コンディションOK、バッテリー8%以下 → 撤退して待機
-  if (battery <= PRE_RACE_BATTERY_STOP) {
-    if (zone !== null) {
-      return { task: { bot, action: "standby", reason: `battery drained (${battery}%)` }, newRepairCount: repairBayCount };
+  // 優先2: バッテリー < 100% → ChargingStation
+  if (battery < 100) {
+    if (zone === "ChargingStation") {
+      return { task: { bot, action: "none", reason: `charging (${battery}%)` }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "none", reason: `ready for overcharge (${battery}%)` }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "charging", reason: `Bat ${battery}% < 100%` }, newRepairCount: repairBayCount };
   }
 
-  // コンディションOK、バッテリー > 8% → ScrapHeapsでバッテリー消費
+  // 優先3: バッテリー 100% → ScrapHeaps
   if (zone === "ScrapHeaps") {
-    return { task: { bot, action: "none", reason: `draining battery (${battery}%)` }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "none", reason: "scavenging OK" }, newRepairCount: repairBayCount };
   }
-
-  // ChargingStationにいる → ScrapHeapsへ（チャージしない）
-  if (zone === "ChargingStation") {
-    return { task: { bot, action: "scrapheaps", reason: "drain battery" }, newRepairCount: repairBayCount };
-  }
-
-  // RepairBay完了後 or アイドル → ScrapHeapsへ
-  return { task: { bot, action: "scrapheaps", reason: "drain battery" }, newRepairCount: repairBayCount };
+  return { task: { bot, action: "scrapheaps", reason: "Bat 100%, ready" }, newRepairCount: repairBayCount };
 }
 
 async function processTeam(
   client: PokedRaceMCPClient,
   teamName: string,
-  teamBots: number[],
-  raceHours: number[]
+  teamBots: number[]
 ): Promise<void> {
-  const minutesToRace = getMinutesToNextRace(raceHours);
-  const isPreRace = isPreRaceMode(raceHours);
-  const modeLabel = isPreRace ? "PRE-RACE" : "SCAVENGE";
-
-  console.log(`\n📋 ${teamName} (${modeLabel} mode)`);
-  console.log(`   Next race in ${minutesToRace} minutes`);
+  console.log(`\n📋 ${teamName}`);
 
   // ステータス取得（並列）
   const statusPromises = teamBots.map(tokenIndex => getBotStatus(client, tokenIndex));
@@ -339,25 +175,13 @@ async function processTeam(
 
   console.log(`   Got ${statuses.length}/${teamBots.length} bot statuses`);
 
-  // PRE-RACEモード時: RepairBayが必要なボット数を確認し、必要なら他のボットを追い出す
-  if (isPreRace) {
-    const needRepair = statuses.filter(s => s.condition < SCAVENGE_CONDITION_MIN && s.zone !== "RepairBay");
-    const currentInRepairBay = statuses.filter(s => s.zone === "RepairBay").length;
-    const neededSlots = Math.max(0, needRepair.length - (MAX_REPAIR_BAY - currentInRepairBay));
-
-    if (neededSlots > 0) {
-      await evictNonPriorityFromRepairBay(client, teamBots, neededSlots);
-    }
-  }
-
   // RepairBay使用数をカウント（このチームのボットのみ）
   let repairBayCount = statuses.filter(s => s.zone === "RepairBay").length;
 
   // タスク計画
   const tasks: BotTask[] = [];
   for (const bot of statuses) {
-    const planner = isPreRace ? planPreRaceMode : planScavengeMode;
-    const { task, newRepairCount } = planner(bot, repairBayCount);
+    const { task, newRepairCount } = planBotAction(bot, repairBayCount);
     tasks.push(task);
     repairBayCount = newRepairCount;
   }
@@ -451,8 +275,8 @@ async function main() {
     console.log(`🅱️  Team B: ${TEAM_B.length} bots (races at 3:00, 15:00 JST)`);
 
     // 両チーム処理
-    await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS);
-    await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS);
+    await processTeam(client, "Team A", TEAM_A);
+    await processTeam(client, "Team B", TEAM_B);
 
     console.log("\n✅ Complete");
     await client.close();

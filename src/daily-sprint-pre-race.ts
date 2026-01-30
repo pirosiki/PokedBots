@@ -127,10 +127,11 @@ async function getUsableBatteries(client: PokedRaceMCPClient): Promise<BatteryIn
     const data = JSON.parse(result.content[0].text);
     if (!data.batteries) return [];
 
-    // stored_kwhが多い順にソート。Joltには20 kWh必要だが、
+    // stored_kwhが多い順にソート。Joltには最低1.7 kWh必要
     // 足りなくなったら次のバッテリーに切り替える
+    const JOLT_MIN_KWH = 1.7;
     return data.batteries
-      .filter((b: any) => b.stored_kwh > 0)
+      .filter((b: any) => b.stored_kwh >= JOLT_MIN_KWH)
       .sort((a: any, b: any) => b.stored_kwh - a.stored_kwh) // 容量が多い順
       .map((b: any) => ({
         id: b.id,

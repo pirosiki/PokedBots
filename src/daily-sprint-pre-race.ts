@@ -264,6 +264,12 @@ async function main() {
       .filter((r): r is PromiseFulfilledResult<BotInfo | null> => r.status === "fulfilled" && r.value !== null)
       .map(r => r.value!);
 
+    console.log(`   Got ${recheckBots.length}/${team.bots.length} bot statuses`);
+    for (const bot of recheckBots) {
+      const icon = bot.battery < 100 ? "⚠️" : "✓";
+      console.log(`   ${icon} #${bot.tokenIndex}: ${bot.battery}%`);
+    }
+
     const stillNeedCharge = recheckBots.filter(b => b.battery < 100);
     if (stillNeedCharge.length > 0) {
       console.log(`\n⚡ Phase 1.5: Jolting ${stillNeedCharge.length} bot(s) still under 100%...`);

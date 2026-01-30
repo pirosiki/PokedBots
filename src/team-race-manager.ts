@@ -6,9 +6,10 @@
  * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
  *
  * 運用フロー:
- * 1. バッテリー < 100% → ChargingStation（100%まで充電）
- * 2. バッテリー 100% → ScrapHeaps（スカベンジング）
- * 3. バッテリー or コンディション < 10% → RepairBay（Cond 70%まで）→ 待機
+ * 1. レース後15分〜1時間15分 → ChargingStation（チャージ期間）
+ * 2. チャージ期間外 → ScrapHeaps
+ * 3. Bat or Cond < 10% → RepairBay（Cond 70%まで）→ 待機
+ *    - RepairBay満員 → 何もせず待機（空いたらRepairBay）
  *
  * レース15分前は別バッチ（daily-sprint-pre-race）で:
  * - 有料リチャージ → Jolt → 有料リペア → Perfect Tune
@@ -34,10 +35,15 @@ const TEAM_B = [
   1209, 8895, 9035, 9567, 5028, 7680, 8636, 5400, 5441
 ];
 
+// レース時刻 (UTC時)
+const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
+const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
+
 // 閾値
 const MAX_REPAIR_BAY = 4;
 const CRITICAL_THRESHOLD = 10;    // これ以下で撤退
 const REPAIR_TARGET = 70;         // 撤退後のリペア目標
+const CHARGE_DURATION_MINUTES = 60; // レース後のチャージ時間（分）
 
 interface BotStatus {
   tokenIndex: number;
@@ -45,6 +51,38 @@ interface BotStatus {
   battery: number;
   condition: number;
   zone: string | null;
+}
+
+/**
+ * 現在時刻がチャージ期間内かどうかを判定
+ * チャージ期間: レース終了後15分〜1時間15分
+ */
+function isChargePeriod(raceHours: number[]): boolean {
+  const now = new Date();
+  const currentHour = now.getUTCHours();
+  const currentMinute = now.getUTCMinutes();
+  const currentTotalMinutes = currentHour * 60 + currentMinute;
+
+  for (const raceHour of raceHours) {
+    // チャージ開始: レース後15分
+    const chargeStart = (raceHour * 60 + 15) % (24 * 60);
+    // チャージ終了: レース後1時間15分
+    const chargeEnd = (raceHour * 60 + 15 + CHARGE_DURATION_MINUTES) % (24 * 60);
+
+    // 日をまたぐ場合の処理
+    if (chargeStart < chargeEnd) {
+      if (currentTotalMinutes >= chargeStart && currentTotalMinutes < chargeEnd) {
+        return true;
+      }
+    } else {
+      // 日をまたぐ（例: 23:15 - 0:15）
+      if (currentTotalMinutes >= chargeStart || currentTotalMinutes < chargeEnd) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Promise<BotStatus | null> {
@@ -118,7 +156,7 @@ interface BotTask {
   reason: string;
 }
 
-function planBotAction(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
+function planBotAction(bot: BotStatus, repairBayCount: number, isCharging: boolean): { task: BotTask; newRepairCount: number } {
   const { battery, condition, zone } = bot;
 
   // 優先1: バッテリー or コンディションが10%を切った → 撤退モード
@@ -131,7 +169,7 @@ function planBotAction(bot: BotStatus, repairBayCount: number): { task: BotTask;
       if (repairBayCount < MAX_REPAIR_BAY) {
         return { task: { bot, action: "repair", reason: `Bat ${battery}% or Cond ${condition}% < ${CRITICAL_THRESHOLD}%` }, newRepairCount: repairBayCount + 1 };
       }
-      // RepairBay満員 → 待機
+      // RepairBay満員 → 待機（何もしない）
       if (zone !== null) {
         return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
       }
@@ -144,27 +182,31 @@ function planBotAction(bot: BotStatus, repairBayCount: number): { task: BotTask;
     return { task: { bot, action: "none", reason: `standby (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: repairBayCount };
   }
 
-  // 優先2: バッテリー < 100% → ChargingStation
-  if (battery < 100) {
+  // 優先2: チャージ期間中 → ChargingStation
+  if (isCharging) {
     if (zone === "ChargingStation") {
-      return { task: { bot, action: "none", reason: `charging (${battery}%)` }, newRepairCount: repairBayCount };
+      return { task: { bot, action: "none", reason: `charging period (${battery}%)` }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "charging", reason: `Bat ${battery}% < 100%` }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "charging", reason: "charge period" }, newRepairCount: repairBayCount };
   }
 
-  // 優先3: バッテリー 100% → ScrapHeaps
+  // 優先3: チャージ期間外 → ScrapHeaps
   if (zone === "ScrapHeaps") {
     return { task: { bot, action: "none", reason: "scavenging OK" }, newRepairCount: repairBayCount };
   }
-  return { task: { bot, action: "scrapheaps", reason: "Bat 100%, ready" }, newRepairCount: repairBayCount };
+  return { task: { bot, action: "scrapheaps", reason: "ready to scavenge" }, newRepairCount: repairBayCount };
 }
 
 async function processTeam(
   client: PokedRaceMCPClient,
   teamName: string,
-  teamBots: number[]
+  teamBots: number[],
+  raceHours: number[]
 ): Promise<void> {
-  console.log(`\n📋 ${teamName}`);
+  const isCharging = isChargePeriod(raceHours);
+  const modeLabel = isCharging ? "CHARGE" : "SCAVENGE";
+
+  console.log(`\n📋 ${teamName} (${modeLabel} mode)`);
 
   // ステータス取得（並列）
   const statusPromises = teamBots.map(tokenIndex => getBotStatus(client, tokenIndex));
@@ -181,7 +223,7 @@ async function processTeam(
   // タスク計画
   const tasks: BotTask[] = [];
   for (const bot of statuses) {
-    const { task, newRepairCount } = planBotAction(bot, repairBayCount);
+    const { task, newRepairCount } = planBotAction(bot, repairBayCount, isCharging);
     tasks.push(task);
     repairBayCount = newRepairCount;
   }
@@ -275,8 +317,8 @@ async function main() {
     console.log(`🅱️  Team B: ${TEAM_B.length} bots (races at 3:00, 15:00 JST)`);
 
     // 両チーム処理
-    await processTeam(client, "Team A", TEAM_A);
-    await processTeam(client, "Team B", TEAM_B);
+    await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS);
+    await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS);
 
     console.log("\n✅ Complete");
     await client.close();

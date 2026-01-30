@@ -332,6 +332,14 @@ async function main() {
     }
 
     // Phase 2: コンディション < 100% → 有料リペア
+    // リペア前に再度呼び戻し（リペアはスカベンジング中不可）
+    console.log("\n📥 Recalling all bots before repair...");
+    const recallBeforeRepair = team.bots.map(async (tokenIndex) => {
+      await completeScavenging(client, tokenIndex);
+    });
+    await Promise.allSettled(recallBeforeRepair);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
     const needRepair = bots.filter(b => b.condition < 100);
     if (needRepair.length > 0) {
       console.log(`\n🔧 Phase 2: Repairing ${needRepair.length} bot(s) → Perfect Tune...`);

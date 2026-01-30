@@ -5,11 +5,21 @@
  * - Aチーム: 9:00, 21:00 JST (0:00, 12:00 UTC)
  * - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
  *
- * 運用フロー:
- * 1. レース後15分〜1時間15分 → ChargingStation（チャージ期間）
- * 2. チャージ期間外 → ScrapHeaps
- * 3. Bat or Cond < 10% → RepairBay（Cond 70%まで）→ 待機
- *    - 次のレースが近いチームを優先、他チームを押し出す
+ * 運用フロー（3フェーズ）:
+ *
+ * フェーズ1: 通常スカベンジング（レース後〜5時間前）
+ *   - Bat < 75% → ChargingStation（95%以上まで）
+ *   - Cond < 30% → RepairBay（50%以上まで）
+ *   - それ以外 → ScrapHeaps
+ *
+ * フェーズ2: バッテリー消費モード（5時間前〜2時間前）
+ *   - チャージ・リペアせず、ひたすらScrapHeaps
+ *   - Bat < 8% or Cond < 10% → 待機
+ *
+ * フェーズ3: プリレースリペア（2時間前〜レース）
+ *   - チャージなし
+ *   - Cond < 70% → RepairBay（70%以上まで）
+ *   - 他チームをRepairBayから押し出す
  *
  * レース15分前は別バッチ（daily-sprint-pre-race）で:
  * - 有料リチャージ → Jolt → 有料リペア → Perfect Tune
@@ -39,11 +49,26 @@ const TEAM_B = [
 const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
 const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
 
-// 閾値
+// フェーズ閾値（分）
+const PHASE2_START = 5 * 60;  // 5時間前からフェーズ2
+const PHASE3_START = 2 * 60;  // 2時間前からフェーズ3
+
+// フェーズ1: 通常スカベンジング
+const P1_BATTERY_CHARGE_THRESHOLD = 75;   // これ以下でチャージ
+const P1_BATTERY_CHARGE_TARGET = 95;      // ここまでチャージ
+const P1_CONDITION_REPAIR_THRESHOLD = 30; // これ以下でリペア
+const P1_CONDITION_REPAIR_TARGET = 50;    // ここまでリペア
+
+// フェーズ2: バッテリー消費
+const P2_BATTERY_STOP = 8;      // これ以下で待機
+const P2_CONDITION_STOP = 10;   // これ以下で待機
+
+// フェーズ3: プリレースリペア
+const P3_CONDITION_REPAIR_THRESHOLD = 70; // これ以下でリペア
+
 const MAX_REPAIR_BAY = 4;
-const CRITICAL_THRESHOLD = 10;    // これ以下で撤退
-const REPAIR_TARGET = 70;         // 撤退後のリペア目標
-const CHARGE_DURATION_MINUTES = 60; // レース後のチャージ時間（分）
+
+type Phase = "normal" | "drain" | "prerace";
 
 interface BotStatus {
   tokenIndex: number;
@@ -79,35 +104,16 @@ function getMinutesToNextRace(raceHours: number[]): number {
 }
 
 /**
- * 現在時刻がチャージ期間内かどうかを判定
- * チャージ期間: レース終了後15分〜1時間15分
+ * 現在のフェーズを判定
  */
-function isChargePeriod(raceHours: number[]): boolean {
-  const now = new Date();
-  const currentHour = now.getUTCHours();
-  const currentMinute = now.getUTCMinutes();
-  const currentTotalMinutes = currentHour * 60 + currentMinute;
-
-  for (const raceHour of raceHours) {
-    // チャージ開始: レース後15分
-    const chargeStart = (raceHour * 60 + 15) % (24 * 60);
-    // チャージ終了: レース後1時間15分
-    const chargeEnd = (raceHour * 60 + 15 + CHARGE_DURATION_MINUTES) % (24 * 60);
-
-    // 日をまたぐ場合の処理
-    if (chargeStart < chargeEnd) {
-      if (currentTotalMinutes >= chargeStart && currentTotalMinutes < chargeEnd) {
-        return true;
-      }
-    } else {
-      // 日をまたぐ（例: 23:15 - 0:15）
-      if (currentTotalMinutes >= chargeStart || currentTotalMinutes < chargeEnd) {
-        return true;
-      }
-    }
+function getCurrentPhase(minutesToRace: number): Phase {
+  if (minutesToRace <= PHASE3_START) {
+    return "prerace";
+  } else if (minutesToRace <= PHASE2_START) {
+    return "drain";
+  } else {
+    return "normal";
   }
-
-  return false;
 }
 
 async function getBotStatus(client: PokedRaceMCPClient, tokenIndex: number): Promise<BotStatus | null> {
@@ -189,7 +195,6 @@ async function evictFromRepairBay(
   otherTeamStatuses: BotStatus[],
   neededSlots: number
 ): Promise<number> {
-  // RepairBayにいる他チームのボットを抽出
   const inRepairBay = otherTeamStatuses.filter(s => s.zone === "RepairBay");
 
   if (inRepairBay.length === 0 || neededSlots <= 0) {
@@ -214,45 +219,114 @@ async function evictFromRepairBay(
   return evictedCount;
 }
 
-function planBotAction(bot: BotStatus, repairBayCount: number, isCharging: boolean): { task: BotTask; newRepairCount: number } {
+/**
+ * フェーズ1: 通常スカベンジング
+ */
+function planPhase1(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
   const { battery, condition, zone } = bot;
 
-  // 優先1: バッテリー or コンディションが10%を切った → 撤退モード
-  if (battery < CRITICAL_THRESHOLD || condition < CRITICAL_THRESHOLD) {
-    // コンディション70%未満 → RepairBay
-    if (condition < REPAIR_TARGET) {
-      if (zone === "RepairBay") {
-        return { task: { bot, action: "none", reason: `critical repair (${condition}%)` }, newRepairCount: repairBayCount };
+  // コンディション < 30% → RepairBay（50%以上まで）
+  if (condition < P1_CONDITION_REPAIR_THRESHOLD) {
+    if (zone === "RepairBay") {
+      if (condition >= P1_CONDITION_REPAIR_TARGET) {
+        // 目標達成、次へ
+        if (battery < P1_BATTERY_CHARGE_THRESHOLD) {
+          return { task: { bot, action: "charging", reason: `repaired, need charge` }, newRepairCount: repairBayCount };
+        }
+        return { task: { bot, action: "scrapheaps", reason: `repaired, ready` }, newRepairCount: repairBayCount };
       }
-      if (repairBayCount < MAX_REPAIR_BAY) {
-        return { task: { bot, action: "repair", reason: `Bat ${battery}% or Cond ${condition}% < ${CRITICAL_THRESHOLD}%` }, newRepairCount: repairBayCount + 1 };
-      }
-      // RepairBay満員 → 待機（何もしない）
-      if (zone !== null) {
-        return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
-      }
-      return { task: { bot, action: "none", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
+      return { task: { bot, action: "none", reason: `repairing (${condition}%)` }, newRepairCount: repairBayCount };
     }
-    // コンディション70%以上 → 待機
+    if (repairBayCount < MAX_REPAIR_BAY) {
+      return { task: { bot, action: "repair", reason: `Cond ${condition}% < ${P1_CONDITION_REPAIR_THRESHOLD}%` }, newRepairCount: repairBayCount + 1 };
+    }
+    // 待機
     if (zone !== null) {
-      return { task: { bot, action: "standby", reason: `critical standby (Bat ${battery}%)` }, newRepairCount: repairBayCount };
+      return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "none", reason: `standby (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "none", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
   }
 
-  // 優先2: チャージ期間中 → ChargingStation
-  if (isCharging) {
+  // バッテリー < 75% → ChargingStation（95%以上まで）
+  if (battery < P1_BATTERY_CHARGE_THRESHOLD) {
     if (zone === "ChargingStation") {
-      return { task: { bot, action: "none", reason: `charging period (${battery}%)` }, newRepairCount: repairBayCount };
+      if (battery >= P1_BATTERY_CHARGE_TARGET) {
+        return { task: { bot, action: "scrapheaps", reason: `charged, ready` }, newRepairCount: repairBayCount };
+      }
+      return { task: { bot, action: "none", reason: `charging (${battery}%)` }, newRepairCount: repairBayCount };
     }
-    return { task: { bot, action: "charging", reason: "charge period" }, newRepairCount: repairBayCount };
+    return { task: { bot, action: "charging", reason: `Bat ${battery}% < ${P1_BATTERY_CHARGE_THRESHOLD}%` }, newRepairCount: repairBayCount };
   }
 
-  // 優先3: チャージ期間外 → ScrapHeaps
+  // ScrapHeaps
   if (zone === "ScrapHeaps") {
     return { task: { bot, action: "none", reason: "scavenging OK" }, newRepairCount: repairBayCount };
   }
   return { task: { bot, action: "scrapheaps", reason: "ready to scavenge" }, newRepairCount: repairBayCount };
+}
+
+/**
+ * フェーズ2: バッテリー消費モード
+ */
+function planPhase2(bot: BotStatus): { task: BotTask; newRepairCount: number } {
+  const { battery, condition, zone } = bot;
+
+  // バッテリー < 8% or コンディション < 10% → 待機
+  if (battery < P2_BATTERY_STOP || condition < P2_CONDITION_STOP) {
+    if (zone !== null) {
+      return { task: { bot, action: "standby", reason: `critical (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: 0 };
+    }
+    return { task: { bot, action: "none", reason: `standby (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: 0 };
+  }
+
+  // ScrapHeaps
+  if (zone === "ScrapHeaps") {
+    return { task: { bot, action: "none", reason: `draining (Bat ${battery}%)` }, newRepairCount: 0 };
+  }
+  return { task: { bot, action: "scrapheaps", reason: "drain battery" }, newRepairCount: 0 };
+}
+
+/**
+ * フェーズ3: プリレースリペア
+ */
+function planPhase3(bot: BotStatus, repairBayCount: number): { task: BotTask; newRepairCount: number } {
+  const { battery, condition, zone } = bot;
+
+  // コンディション < 70% → RepairBay
+  if (condition < P3_CONDITION_REPAIR_THRESHOLD) {
+    if (zone === "RepairBay") {
+      if (condition >= P3_CONDITION_REPAIR_THRESHOLD) {
+        // 目標達成 → 待機
+        return { task: { bot, action: "standby", reason: `repaired, ready` }, newRepairCount: repairBayCount };
+      }
+      return { task: { bot, action: "none", reason: `pre-race repair (${condition}%)` }, newRepairCount: repairBayCount };
+    }
+    if (repairBayCount < MAX_REPAIR_BAY) {
+      return { task: { bot, action: "repair", reason: `Cond ${condition}% < ${P3_CONDITION_REPAIR_THRESHOLD}%` }, newRepairCount: repairBayCount + 1 };
+    }
+    // 待機
+    if (zone !== null) {
+      return { task: { bot, action: "standby", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
+    }
+    return { task: { bot, action: "none", reason: "waiting for RepairBay" }, newRepairCount: repairBayCount };
+  }
+
+  // コンディションOK → 待機
+  if (zone !== null) {
+    return { task: { bot, action: "standby", reason: `ready (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: repairBayCount };
+  }
+  return { task: { bot, action: "none", reason: `ready (Bat ${battery}%, Cond ${condition}%)` }, newRepairCount: repairBayCount };
+}
+
+function planBotAction(bot: BotStatus, repairBayCount: number, phase: Phase): { task: BotTask; newRepairCount: number } {
+  switch (phase) {
+    case "normal":
+      return planPhase1(bot, repairBayCount);
+    case "drain":
+      return planPhase2(bot);
+    case "prerace":
+      return planPhase3(bot, repairBayCount);
+  }
 }
 
 async function processTeam(
@@ -260,16 +334,16 @@ async function processTeam(
   teamName: string,
   teamBots: number[],
   raceHours: number[],
-  isPriority: boolean,
+  isPreracePriority: boolean,
   otherTeamStatuses: BotStatus[]
 ): Promise<{ statuses: BotStatus[] }> {
-  const isCharging = isChargePeriod(raceHours);
   const minutesToRace = getMinutesToNextRace(raceHours);
-  const modeLabel = isCharging ? "CHARGE" : "SCAVENGE";
-  const priorityLabel = isPriority ? " ★PRIORITY" : "";
+  const phase = getCurrentPhase(minutesToRace);
+  const phaseLabel = phase === "normal" ? "NORMAL" : phase === "drain" ? "DRAIN" : "PRERACE";
+  const priorityLabel = (phase === "prerace" && isPreracePriority) ? " ★PRIORITY" : "";
 
-  console.log(`\n📋 ${teamName} (${modeLabel} mode)${priorityLabel}`);
-  console.log(`   Next race in ${minutesToRace} minutes`);
+  console.log(`\n📋 ${teamName} (${phaseLabel} mode)${priorityLabel}`);
+  console.log(`   Next race in ${minutesToRace} minutes (${(minutesToRace / 60).toFixed(1)}h)`);
 
   // ステータス取得（並列）
   const statusPromises = teamBots.map(tokenIndex => getBotStatus(client, tokenIndex));
@@ -280,11 +354,10 @@ async function processTeam(
 
   console.log(`   Got ${statuses.length}/${teamBots.length} bot statuses`);
 
-  // 優先チームの場合、RepairBayが必要なボットをカウントし、必要なら他チームを押し出す
-  if (isPriority) {
+  // フェーズ3（プリレース）で優先チームの場合、他チームを押し出す
+  if (phase === "prerace" && isPreracePriority) {
     const needRepair = statuses.filter(s =>
-      (s.battery < CRITICAL_THRESHOLD || s.condition < CRITICAL_THRESHOLD) &&
-      s.condition < REPAIR_TARGET &&
+      s.condition < P3_CONDITION_REPAIR_THRESHOLD &&
       s.zone !== "RepairBay"
     );
     const currentInRepairBay = statuses.filter(s => s.zone === "RepairBay").length;
@@ -296,13 +369,13 @@ async function processTeam(
     }
   }
 
-  // RepairBay使用数をカウント（このチームのボットのみ）
+  // RepairBay使用数をカウント
   let repairBayCount = statuses.filter(s => s.zone === "RepairBay").length;
 
   // タスク計画
   const tasks: BotTask[] = [];
   for (const bot of statuses) {
-    const { task, newRepairCount } = planBotAction(bot, repairBayCount, isCharging);
+    const { task, newRepairCount } = planBotAction(bot, repairBayCount, phase);
     tasks.push(task);
     repairBayCount = newRepairCount;
   }
@@ -401,12 +474,10 @@ async function main() {
     const minutesToB = getMinutesToNextRace(TEAM_B_RACE_HOURS);
     const teamAFirst = minutesToA <= minutesToB;
 
-    console.log(`\n⏰ Team A: ${minutesToA}min to race, Team B: ${minutesToB}min to race`);
-    console.log(`   Priority: ${teamAFirst ? "Team A" : "Team B"}`);
+    console.log(`\n⏰ Team A: ${minutesToA}min (${(minutesToA/60).toFixed(1)}h), Team B: ${minutesToB}min (${(minutesToB/60).toFixed(1)}h)`);
 
-    // 優先チームを先に処理
+    // 優先チームを先に処理（フェーズ3の押し出し用）
     if (teamAFirst) {
-      // Team Bのステータスを先に取得（押し出し判定用）
       const teamBStatusPromises = TEAM_B.map(tokenIndex => getBotStatus(client, tokenIndex));
       const teamBResults = await Promise.allSettled(teamBStatusPromises);
       const teamBStatuses: BotStatus[] = teamBResults
@@ -416,7 +487,6 @@ async function main() {
       await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS, true, teamBStatuses);
       await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS, false, []);
     } else {
-      // Team Aのステータスを先に取得（押し出し判定用）
       const teamAStatusPromises = TEAM_A.map(tokenIndex => getBotStatus(client, tokenIndex));
       const teamAResults = await Promise.allSettled(teamAStatusPromises);
       const teamAStatuses: BotStatus[] = teamAResults

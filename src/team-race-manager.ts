@@ -9,7 +9,7 @@
  * 1. レース後15分〜1時間15分 → ChargingStation（チャージ期間）
  * 2. チャージ期間外 → ScrapHeaps
  * 3. Bat or Cond < 10% → RepairBay（Cond 70%まで）→ 待機
- *    - RepairBay満員 → 何もせず待機（空いたらRepairBay）
+ *    - 次のレースが近いチームを優先、他チームを押し出す
  *
  * レース15分前は別バッチ（daily-sprint-pre-race）で:
  * - 有料リチャージ → Jolt → 有料リペア → Perfect Tune
@@ -51,6 +51,31 @@ interface BotStatus {
   battery: number;
   condition: number;
   zone: string | null;
+}
+
+/**
+ * 次のレースまでの分数を取得
+ */
+function getMinutesToNextRace(raceHours: number[]): number {
+  const now = new Date();
+  const currentHour = now.getUTCHours();
+  const currentMinute = now.getUTCMinutes();
+  const currentTotalMinutes = currentHour * 60 + currentMinute;
+
+  let minMinutes = Infinity;
+
+  for (const raceHour of raceHours) {
+    const raceTotalMinutes = raceHour * 60;
+    let diff = raceTotalMinutes - currentTotalMinutes;
+    if (diff <= 0) {
+      diff += 24 * 60; // 次の日
+    }
+    if (diff < minMinutes) {
+      minMinutes = diff;
+    }
+  }
+
+  return minMinutes;
 }
 
 /**
@@ -156,6 +181,39 @@ interface BotTask {
   reason: string;
 }
 
+/**
+ * 優先チームのためにRepairBayから他チームのボットを押し出す
+ */
+async function evictFromRepairBay(
+  client: PokedRaceMCPClient,
+  otherTeamStatuses: BotStatus[],
+  neededSlots: number
+): Promise<number> {
+  // RepairBayにいる他チームのボットを抽出
+  const inRepairBay = otherTeamStatuses.filter(s => s.zone === "RepairBay");
+
+  if (inRepairBay.length === 0 || neededSlots <= 0) {
+    return 0;
+  }
+
+  const toEvict = inRepairBay.slice(0, neededSlots);
+  let evictedCount = 0;
+
+  console.log(`\n🚨 Evicting ${toEvict.length} bot(s) from RepairBay for priority team...`);
+
+  for (const bot of toEvict) {
+    try {
+      await completeScavenging(client, bot.tokenIndex);
+      console.log(`   ➡️ #${bot.tokenIndex} ${bot.name} → Standby (evicted)`);
+      evictedCount++;
+    } catch (e) {
+      console.log(`   ❌ #${bot.tokenIndex} ${bot.name} eviction failed: ${e}`);
+    }
+  }
+
+  return evictedCount;
+}
+
 function planBotAction(bot: BotStatus, repairBayCount: number, isCharging: boolean): { task: BotTask; newRepairCount: number } {
   const { battery, condition, zone } = bot;
 
@@ -201,12 +259,17 @@ async function processTeam(
   client: PokedRaceMCPClient,
   teamName: string,
   teamBots: number[],
-  raceHours: number[]
-): Promise<void> {
+  raceHours: number[],
+  isPriority: boolean,
+  otherTeamStatuses: BotStatus[]
+): Promise<{ statuses: BotStatus[] }> {
   const isCharging = isChargePeriod(raceHours);
+  const minutesToRace = getMinutesToNextRace(raceHours);
   const modeLabel = isCharging ? "CHARGE" : "SCAVENGE";
+  const priorityLabel = isPriority ? " ★PRIORITY" : "";
 
-  console.log(`\n📋 ${teamName} (${modeLabel} mode)`);
+  console.log(`\n📋 ${teamName} (${modeLabel} mode)${priorityLabel}`);
+  console.log(`   Next race in ${minutesToRace} minutes`);
 
   // ステータス取得（並列）
   const statusPromises = teamBots.map(tokenIndex => getBotStatus(client, tokenIndex));
@@ -216,6 +279,22 @@ async function processTeam(
     .map(r => r.value!);
 
   console.log(`   Got ${statuses.length}/${teamBots.length} bot statuses`);
+
+  // 優先チームの場合、RepairBayが必要なボットをカウントし、必要なら他チームを押し出す
+  if (isPriority) {
+    const needRepair = statuses.filter(s =>
+      (s.battery < CRITICAL_THRESHOLD || s.condition < CRITICAL_THRESHOLD) &&
+      s.condition < REPAIR_TARGET &&
+      s.zone !== "RepairBay"
+    );
+    const currentInRepairBay = statuses.filter(s => s.zone === "RepairBay").length;
+    const availableSlots = MAX_REPAIR_BAY - currentInRepairBay;
+    const neededSlots = needRepair.length - availableSlots;
+
+    if (neededSlots > 0) {
+      await evictFromRepairBay(client, otherTeamStatuses, neededSlots);
+    }
+  }
 
   // RepairBay使用数をカウント（このチームのボットのみ）
   let repairBayCount = statuses.filter(s => s.zone === "RepairBay").length;
@@ -242,7 +321,7 @@ async function processTeam(
   const activeTasks = tasks.filter(t => t.action !== "none");
   if (activeTasks.length === 0) {
     console.log(`   No actions needed`);
-    return;
+    return { statuses };
   }
 
   console.log(`\n   Executing ${activeTasks.length} actions...`);
@@ -301,6 +380,7 @@ async function processTeam(
   }
 
   console.log(`   Completed: ${successCount}/${activeTasks.length}`);
+  return { statuses };
 }
 
 async function main() {
@@ -316,9 +396,36 @@ async function main() {
     console.log(`🅰️  Team A: ${TEAM_A.length} bots (races at 9:00, 21:00 JST)`);
     console.log(`🅱️  Team B: ${TEAM_B.length} bots (races at 3:00, 15:00 JST)`);
 
-    // 両チーム処理
-    await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS);
-    await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS);
+    // どちらのチームが次のレースに近いか判定
+    const minutesToA = getMinutesToNextRace(TEAM_A_RACE_HOURS);
+    const minutesToB = getMinutesToNextRace(TEAM_B_RACE_HOURS);
+    const teamAFirst = minutesToA <= minutesToB;
+
+    console.log(`\n⏰ Team A: ${minutesToA}min to race, Team B: ${minutesToB}min to race`);
+    console.log(`   Priority: ${teamAFirst ? "Team A" : "Team B"}`);
+
+    // 優先チームを先に処理
+    if (teamAFirst) {
+      // Team Bのステータスを先に取得（押し出し判定用）
+      const teamBStatusPromises = TEAM_B.map(tokenIndex => getBotStatus(client, tokenIndex));
+      const teamBResults = await Promise.allSettled(teamBStatusPromises);
+      const teamBStatuses: BotStatus[] = teamBResults
+        .filter((r): r is PromiseFulfilledResult<BotStatus | null> => r.status === "fulfilled" && r.value !== null)
+        .map(r => r.value!);
+
+      await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS, true, teamBStatuses);
+      await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS, false, []);
+    } else {
+      // Team Aのステータスを先に取得（押し出し判定用）
+      const teamAStatusPromises = TEAM_A.map(tokenIndex => getBotStatus(client, tokenIndex));
+      const teamAResults = await Promise.allSettled(teamAStatusPromises);
+      const teamAStatuses: BotStatus[] = teamAResults
+        .filter((r): r is PromiseFulfilledResult<BotStatus | null> => r.status === "fulfilled" && r.value !== null)
+        .map(r => r.value!);
+
+      await processTeam(client, "Team B", TEAM_B, TEAM_B_RACE_HOURS, true, teamAStatuses);
+      await processTeam(client, "Team A", TEAM_A, TEAM_A_RACE_HOURS, false, []);
+    }
 
     console.log("\n✅ Complete");
     await client.close();

@@ -7,16 +7,16 @@
  *
  * 運用フロー（3フェーズ）:
  *
- * フェーズ1: 通常スカベンジング（レース後〜5時間前）
+ * フェーズ1: 通常スカベンジング（レース後〜6時間前）
  *   - Bat < 75% → ChargingStation（95%以上まで）
  *   - Cond < 30% → RepairBay（50%以上まで）
  *   - それ以外 → ScrapHeaps
  *
- * フェーズ2: バッテリー消費モード（5時間前〜2時間前）
+ * フェーズ2: バッテリー消費モード（6時間前〜3時間前）
  *   - チャージ・リペアせず、ひたすらScrapHeaps
  *   - Bat < 8% or Cond < 10% → 待機
  *
- * フェーズ3: プリレースリペア（2時間前〜レース）
+ * フェーズ3: プリレースリペア（3時間前〜レース）
  *   - チャージなし
  *   - Cond < 70% → RepairBay（70%以上まで）
  *   - 他チームをRepairBayから押し出す
@@ -50,8 +50,8 @@ const TEAM_A_RACE_HOURS = [0, 12];  // 9:00, 21:00 JST
 const TEAM_B_RACE_HOURS = [6, 18];  // 3:00, 15:00 JST
 
 // フェーズ閾値（分）
-const PHASE2_START = 5 * 60;  // 5時間前からフェーズ2
-const PHASE3_START = 2 * 60;  // 2時間前からフェーズ3
+const PHASE2_START = 6 * 60;  // 6時間前からフェーズ2
+const PHASE3_START = 3 * 60;  // 3時間前からフェーズ3
 
 // フェーズ1: 通常スカベンジング
 const P1_BATTERY_CHARGE_THRESHOLD = 75;   // これ以下でチャージ

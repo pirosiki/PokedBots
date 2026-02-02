@@ -222,7 +222,14 @@ async function main() {
     const allOwnedBots = await getAllOwnedBots(client);
 
     // TEMPORARY: Only process specific bots (remove this filter to process all)
-    const TARGET_BOTS = [9581, 5357, 389, 2957, 9716];
+    // Former racing bots (moved to scavenging due to battery shortage):
+    // From Team A: 2441, 9888, 7098, 9048, 2475, 7522
+    // From Team B: 9567, 5028, 7680, 8636, 1203, 1866, 7486
+    const TARGET_BOTS = [
+      9581, 5357, 389, 2957, 9716,  // Original scavenging bots
+      2441, 9888, 7098, 9048, 2475, 7522,              // Former Team A
+      9567, 5028, 7680, 8636, 1203, 1866, 7486        // Former Team B
+    ];
     const allBots = allOwnedBots.filter(bot => TARGET_BOTS.includes(bot));
     console.log(`🎯 Filtered to ${allBots.length} target bots: ${TARGET_BOTS.join(', ')}`);
 

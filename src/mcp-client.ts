@@ -50,6 +50,7 @@ export class PokedRaceMCPClient {
     const data = await response.json();
 
     if (data.error) {
+      console.error("Full error response:", JSON.stringify(data, null, 2));
       throw new Error(`JSON-RPC Error: ${data.error.message} (code: ${data.error.code})`);
     }
 

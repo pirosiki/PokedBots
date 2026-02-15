@@ -29,20 +29,16 @@ dotenv.config();
 const SERVER_URL = process.env.MCP_SERVER_URL || "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-// Target bots (11 total) - スカベンジ専用ボット
-// レース用ボット (TEAM_A/TEAM_B) は team-race-manager が管理
+// 1st Army Roster (16 bots)
 const TARGET_BOTS = [
-  9381,
-  5357,
-  389,
-  2957,
-  2740,
-  879,
-  2985,
-  1038,
-  8626,
-  2542,
-  9716
+  // Elite
+  9943, 7486, 5677, 2669, 1315, 5136,
+  // Raider
+  8313, 820, 5028, 8895,
+  // Junker
+  3535, 1722, 3674,
+  // Scrap
+  3406, 631, 406,
 ];
 
 // Thresholds

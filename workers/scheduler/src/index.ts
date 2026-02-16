@@ -49,7 +49,7 @@ export default {
 
     if (event.cron === '*/15 * * * *') {
       workflowFile = 'auto-scavenge.yml';
-    } else if (event.cron === '25 5,11,17,23 * * *') {
+    } else if (event.cron === '0 4,10,16,22 * * *') {
       workflowFile = 'auto-event-registration.yml';
     }
 

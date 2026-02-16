@@ -23,7 +23,8 @@
     "charge-racing": "tsx charge-racing-bots.ts",
     "register-free-races": "tsx src/register-free-races.ts",
     "special-race-prep": "tsx src/special-race-prep.ts",
-    "team-race-manager": "tsx src/team-race-manager.ts"
+    "team-race-manager": "tsx src/team-race-manager.ts",
+    "deploy": "cd workers/scheduler && npm run deploy"
   },
   "keywords": [
     "mcp",

@@ -44,22 +44,21 @@ export default {
     console.log(`⏰ Scheduler triggered at ${new Date().toISOString()}`);
     console.log(`   Cron: ${event.cron}`);
 
-    // Determine which workflow to trigger based on cron schedule
-    let workflowFile = '';
+    // Determine which workflows to trigger based on cron schedule
+    let workflowFiles: string[] = [];
 
     if (event.cron === '*/15 * * * *') {
-      workflowFile = 'routine-manager.yml';
+      workflowFiles = ['routine-manager.yml', 'elite-raider-scavenge.yml'];
     } else if (event.cron === '0 4,10,16,22 * * *') {
-      workflowFile = 'race-prep.yml';
+      workflowFiles = ['race-prep.yml'];
     }
 
-    if (workflowFile) {
-      const success = await triggerWorkflow(env, workflowFile);
-      if (success) {
-        console.log(`✅ Workflow ${workflowFile} triggered successfully`);
-      } else {
-        console.log(`❌ Failed to trigger workflow ${workflowFile}`);
-      }
+    if (workflowFiles.length > 0) {
+      const results = await Promise.all(
+        workflowFiles.map((workflowFile) => triggerWorkflow(env, workflowFile))
+      );
+      const successCount = results.filter(Boolean).length;
+      console.log(`✅ Triggered ${successCount}/${workflowFiles.length} workflows`);
     }
   },
 

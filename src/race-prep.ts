@@ -4,7 +4,7 @@
  * Daily Sprintの2時間前に実行:
  *   1. イベント取得 → 地形取得（フォールバック付き）
  *   2. 8体選出（各Tier × 地形マッチ、最大2体/Tier）
- *   3. recall → RepairBay(Cond<70%) → 有料Charge → Jolt → 有料Repair → 登録
+ *   3. recall → RepairBay(Cond<70%) → 有料Charge → Jolt(100%まで) → 有料Repair → 登録
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -144,15 +144,42 @@ async function joltBot(
   client: PokedRaceMCPClient,
   token: number,
   batteryId: number
-) {
+): Promise<{
+  ok: boolean;
+  newBatteryLevel?: number;
+  overheated?: boolean;
+  error?: string;
+}> {
   console.log(`   ⚡ Jolt #${token} with Battery #${batteryId}`);
   try {
-    await client.callTool("garage_jolt_bot", {
+    const res = await client.callTool("garage_jolt_bot", {
       token_index: token,
       battery_id: batteryId,
     });
+
+    if (res?.isError) {
+      const errText = res?.content?.[0]?.text || "unknown jolt error";
+      console.error(`   Jolt failed: ${errText}`);
+      return { ok: false, error: errText };
+    }
+
+    let newBatteryLevel: number | undefined;
+    let overheated = false;
+    const text = res?.content?.[0]?.text;
+    if (typeof text === "string") {
+      try {
+        const data = JSON.parse(text);
+        if (typeof data?.bot?.new_battery_level === "number") {
+          newBatteryLevel = data.bot.new_battery_level;
+        }
+        overheated = !!data?.bot?.is_overheated;
+      } catch {}
+    }
+
+    return { ok: true, newBatteryLevel, overheated };
   } catch (e: any) {
     console.error(`   Jolt failed: ${e.message}`);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -301,11 +328,41 @@ async function main() {
     await paidCharge(client, bot.token);
     await new Promise((r) => setTimeout(r, 300));
 
-    // d. Jolt (battery item for extra charge)
-    if (batteryIdx < batteryIds.length) {
-      await joltBot(client, bot.token, batteryIds[batteryIdx]);
+    // Refresh battery after paid charge
+    const afterCharge = await getBotDetails(client, bot.token);
+    let currentBattery = afterCharge?.condition?.battery ?? bat;
+
+    // d. Jolt repeatedly until battery reaches 100% (or stop conditions)
+    while (currentBattery < 100 && batteryIdx < batteryIds.length) {
+      const joltResult = await joltBot(client, bot.token, batteryIds[batteryIdx]);
       batteryIdx++;
       await new Promise((r) => setTimeout(r, 300));
+
+      if (!joltResult.ok) {
+        continue;
+      }
+
+      if (typeof joltResult.newBatteryLevel === "number") {
+        currentBattery = joltResult.newBatteryLevel;
+      } else {
+        const afterJolt = await getBotDetails(client, bot.token);
+        currentBattery = afterJolt?.condition?.battery ?? currentBattery;
+      }
+
+      if (joltResult.overheated) {
+        console.log(`   🌡️ Overheated at ${currentBattery}%, stop jolting`);
+        break;
+      }
+    }
+
+    if (currentBattery < 100) {
+      if (batteryIdx >= batteryIds.length) {
+        console.log(`   🔋 Battery item exhausted at ${currentBattery}%`);
+      } else {
+        console.log(`   ⚠️ Jolt ended at ${currentBattery}%`);
+      }
+    } else {
+      console.log(`   ✅ Battery reached 100%`);
     }
 
     // e. Paid Repair (→ Perfect Tune)

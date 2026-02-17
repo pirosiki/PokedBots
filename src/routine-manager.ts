@@ -22,6 +22,7 @@ const API_KEY = process.env.MCP_API_KEY;
 const RECOVERY_TARGET = 90;
 const RECALL_THRESHOLD = 10;
 const MAX_REPAIR_BAY = 5;
+const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 
 interface BotStatus {
   token: number;
@@ -30,6 +31,34 @@ interface BotStatus {
   condition: number;
   zone: string | null;
   isScavenging: boolean;
+}
+
+function parseRepairBayTokensFromList(text: string): Set<number> {
+  const tokens = new Set<number>();
+  const re = /🏎️ PokedBot #(\d+)([\s\S]*?)(?=\n🏎️ PokedBot #|$)/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(text)) !== null) {
+    const token = parseInt(m[1], 10);
+    const block = m[2] || "";
+    if (/🔍 SCAVENGING:\s*Active[\s\S]*\bin RepairBay\b/.test(block)) {
+      tokens.add(token);
+    }
+  }
+
+  return tokens;
+}
+
+async function getGlobalRepairBayTokens(
+  client: PokedRaceMCPClient
+): Promise<Set<number>> {
+  try {
+    const result = await client.callTool("garage_list_my_pokedbots", {});
+    const text = result?.content?.[0]?.text || "";
+    return parseRepairBayTokensFromList(text);
+  } catch {
+    return new Set<number>();
+  }
 }
 
 async function getBotStatus(
@@ -84,7 +113,7 @@ async function sendTo(
   client: PokedRaceMCPClient,
   token: number,
   zone: string
-): Promise<void> {
+): Promise<boolean> {
   await recall(client, token);
   await new Promise((r) => setTimeout(r, 300));
   try {
@@ -92,9 +121,28 @@ async function sendTo(
       token_index: token,
       zone,
     });
+    return true;
   } catch (e: any) {
     console.error(`  Failed to send #${token} to ${zone}: ${e.message}`);
+    return false;
   }
+}
+
+async function evictOneNonPriorityFromRepairBay(
+  client: PokedRaceMCPClient,
+  repairBayTokens: Set<number>,
+  registered: Set<number>
+): Promise<number | null> {
+  for (const token of repairBayTokens) {
+    if (PRIORITY_TOKENS.has(token)) continue;
+    if (registered.has(token)) continue;
+
+    console.log(`♻️ Evict non-priority from RepairBay: #${token}`);
+    const ok = await sendTo(client, token, "ChargingStation");
+    await new Promise((r) => setTimeout(r, 300));
+    if (ok) return token;
+  }
+  return null;
 }
 
 async function main() {
@@ -115,8 +163,9 @@ async function main() {
     `🏁 Registered: ${registered.size > 0 ? [...registered].join(", ") : "none"}\n`
   );
 
-  // 3. Count current RepairBay usage
-  let repairBayCount = statuses.filter((s) => s.zone === "RepairBay").length;
+  // 3. Global RepairBay usage across all owned bots
+  let globalRepairBayTokens = await getGlobalRepairBayTokens(client);
+  console.log(`🔧 RepairBay occupancy: ${globalRepairBayTokens.size}/${MAX_REPAIR_BAY}\n`);
 
   for (const bot of statuses) {
     const tag = `#${bot.token} ${bot.name} (Bat:${bot.battery}% Cond:${bot.condition}% Zone:${bot.zone || "Idle"})`;
@@ -132,6 +181,7 @@ async function main() {
       if (bot.battery <= RECALL_THRESHOLD || bot.condition <= RECALL_THRESHOLD) {
         console.log(`🔌 ${tag}: low stats → recall & recover`);
         await sendTo(client, bot.token, "ChargingStation");
+        globalRepairBayTokens.delete(bot.token);
       } else {
         console.log(`⛏️ ${tag}: scavenging OK`);
       }
@@ -154,18 +204,37 @@ async function main() {
       if (bot.condition < RECOVERY_TARGET) {
         if (bot.zone === "RepairBay") {
           console.log(`🔧 ${tag}: repairing`);
+          globalRepairBayTokens.add(bot.token);
           continue;
         }
-        if (repairBayCount < MAX_REPAIR_BAY) {
+        if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
           console.log(`🔧 ${tag}: → RepairBay`);
-          await sendTo(client, bot.token, "RepairBay");
-          repairBayCount++;
+          const ok = await sendTo(client, bot.token, "RepairBay");
+          if (ok) globalRepairBayTokens.add(bot.token);
           continue;
         }
-        // RepairBay full → wait at ChargingStation (also charges battery)
+
+        // RepairBay full: evict non-priority bot to reserve slot for routine bots
+        const evicted = await evictOneNonPriorityFromRepairBay(
+          client,
+          globalRepairBayTokens,
+          registered
+        );
+        if (evicted !== null) {
+          globalRepairBayTokens = await getGlobalRepairBayTokens(client);
+          if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
+            console.log(`🔧 ${tag}: priority slot secured → RepairBay`);
+            const ok = await sendTo(client, bot.token, "RepairBay");
+            if (ok) globalRepairBayTokens.add(bot.token);
+            continue;
+          }
+        }
+
+        // Still full → wait at ChargingStation (also charges battery)
         if (bot.zone !== "ChargingStation") {
-          console.log(`⏳ ${tag}: RepairBay full → ChargingStation`);
+          console.log(`⏳ ${tag}: RepairBay full (no slot) → ChargingStation`);
           await sendTo(client, bot.token, "ChargingStation");
+          globalRepairBayTokens.delete(bot.token);
         } else {
           console.log(`⏳ ${tag}: waiting for RepairBay`);
         }
@@ -179,6 +248,7 @@ async function main() {
         } else {
           console.log(`🔌 ${tag}: → ChargingStation`);
           await sendTo(client, bot.token, "ChargingStation");
+          globalRepairBayTokens.delete(bot.token);
         }
         continue;
       }
@@ -189,6 +259,7 @@ async function main() {
       if (bot.zone !== "ScrapHeaps") {
         console.log(`⛏️ ${tag}: recovered → ScrapHeaps`);
         await sendTo(client, bot.token, "ScrapHeaps");
+        globalRepairBayTokens.delete(bot.token);
       } else {
         console.log(`⛏️ ${tag}: scavenging OK`);
       }

@@ -53,6 +53,7 @@ interface BotDetails {
 const RECALL_BATTERY_THRESHOLD = 80;
 const REPAIR_CONDITION_THRESHOLD = 30;
 const REDEPLOY_BATTERY_THRESHOLD = 95;
+const MAX_REPAIR_BAY = 5;
 const CHARGING_ZONE = "ChargingStation";
 const REPAIR_ZONE = "RepairBay";
 
@@ -76,6 +77,20 @@ function parseOwnedBotsFromList(text: string): ListedBot[] {
     out.push({ token, tier });
   }
   return out;
+}
+
+function parseRepairBayTokensFromList(text: string): Set<number> {
+  const tokens = new Set<number>();
+  const re = /🏎️ PokedBot #(\d+)([\s\S]*?)(?=\n🏎️ PokedBot #|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const token = parseInt(m[1], 10);
+    const block = m[2] || "";
+    if (/🔍 SCAVENGING:\s*Active[\s\S]*\bin RepairBay\b/.test(block)) {
+      tokens.add(token);
+    }
+  }
+  return tokens;
 }
 
 function isActiveScavenging(details: BotDetails | null): boolean {
@@ -118,6 +133,18 @@ async function getOwnedBots(client: PokedRaceMCPClient): Promise<ListedBot[]> {
   const result = await client.callTool("garage_list_my_pokedbots", {});
   const text = result?.content?.[0]?.text || "";
   return parseOwnedBotsFromList(text);
+}
+
+async function getRepairBayTokens(
+  client: PokedRaceMCPClient
+): Promise<Set<number>> {
+  try {
+    const result = await client.callTool("garage_list_my_pokedbots", {});
+    const text = result?.content?.[0]?.text || "";
+    return parseRepairBayTokensFromList(text);
+  } catch {
+    return new Set<number>();
+  }
 }
 
 async function getBotDetails(
@@ -203,6 +230,7 @@ async function main() {
     getOwnedBots(client),
     getRegisteredBots(client),
   ]);
+  let repairBayTokens = await getRepairBayTokens(client);
 
   const targets = owned.filter(
     (b) => (b.tier === "Elite" || b.tier === "Raider") && !keepTokens.has(b.token)
@@ -210,6 +238,7 @@ async function main() {
 
   console.log(`Owned bots: ${owned.length}`);
   console.log(`Target Elite/Raider (excluding keep): ${targets.length}`);
+  console.log(`RepairBay occupancy: ${repairBayTokens.size}/${MAX_REPAIR_BAY}`);
   console.log(
     `Registered (skip): ${
       registered.size > 0 ? [...registered].join(", ") : "none"
@@ -269,8 +298,13 @@ async function main() {
       desiredZone = TARGET_ZONE;
       console.log("   -> battery >= 95, redeploy to scavenging");
     } else if (condition < REPAIR_CONDITION_THRESHOLD) {
-      desiredZone = REPAIR_ZONE;
-      console.log("   -> condition < 30, send to RepairBay");
+      if (!(active && zone === REPAIR_ZONE) && repairBayTokens.size >= MAX_REPAIR_BAY) {
+        desiredZone = CHARGING_ZONE;
+        console.log("   -> condition < 30 but RepairBay full, send to ChargingStation");
+      } else {
+        desiredZone = REPAIR_ZONE;
+        console.log("   -> condition < 30, send to RepairBay");
+      }
     } else {
       desiredZone = CHARGING_ZONE;
       console.log("   -> condition >= 30 and battery < 95, send to ChargingStation");
@@ -280,6 +314,13 @@ async function main() {
     if (!ok) {
       failed++;
       continue;
+    }
+
+    if (active && zone === REPAIR_ZONE && desiredZone !== REPAIR_ZONE) {
+      repairBayTokens.delete(t.token);
+    }
+    if (desiredZone === REPAIR_ZONE) {
+      repairBayTokens.add(t.token);
     }
 
     if (desiredZone === TARGET_ZONE) moved++;

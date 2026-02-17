@@ -102,6 +102,24 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<BatteryItem[]> 
   }
 }
 
+async function getRegisteredBots(client: PokedRaceMCPClient): Promise<Set<number>> {
+  try {
+    const result = await client.callTool("racing_get_my_registrations", {});
+    if (!result || !result.content || !result.content[0]) return new Set();
+    const text = result.content[0].text;
+    const ids = new Set<number>();
+    // Match "🤖 Bot: #123"
+    const matches = text.matchAll(/🤖 Bot: #(\d+)/g);
+    for (const match of matches) {
+      ids.add(parseInt(match[1]));
+    }
+    return ids;
+  } catch (e) {
+    console.error("Failed to fetch registrations:", e);
+    return new Set();
+  }
+}
+
 async function completeScavenging(client: PokedRaceMCPClient, tokenIndex: number): Promise<boolean> {
   try {
     const result = await client.callTool("garage_complete_scavenging", { token_index: tokenIndex });
@@ -161,6 +179,10 @@ async function main() {
     // 1. Fetch Status
     const statuses = await getBotStatuses(client);
 
+    // 1b. Fetch Registrations (to avoid sending racers to Scavenge)
+    const registeredBots = await getRegisteredBots(client);
+    console.log(`🏁 Registered bots: ${Array.from(registeredBots).join(', ')}`);
+
     // 2. Fetch Batteries (for Jolt)
     // Note: getBatteries logic needs to be robust. 
     // Since I can't easily verify the format now, I will skip complex parsing and just try to get a ID if possible.
@@ -174,6 +196,12 @@ async function main() {
     for (const bot of statuses) {
       const { tokenIndex, name, battery, condition, zone } = bot;
       const displayName = `#${tokenIndex} ${name} (Bat:${battery}% Cond:${condition}%)`;
+
+      // 0. Skip if Registered for Race
+      if (registeredBots.has(tokenIndex)) {
+        console.log(`🏁 ${displayName}: Registered for race, skipping scavenging`);
+        continue;
+      }
 
       // A. Return Logic (Threshold 10%)
       if (zone === "ScrapHeaps") {

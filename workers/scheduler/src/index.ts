@@ -48,9 +48,9 @@ export default {
     let workflowFile = '';
 
     if (event.cron === '*/15 * * * *') {
-      workflowFile = 'auto-scavenge.yml';
+      workflowFile = 'routine-manager.yml';
     } else if (event.cron === '0 4,10,16,22 * * *') {
-      workflowFile = 'auto-event-registration.yml';
+      workflowFile = 'race-prep.yml';
     }
 
     if (workflowFile) {

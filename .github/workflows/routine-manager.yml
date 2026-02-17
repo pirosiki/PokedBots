@@ -1,10 +1,10 @@
-name: Register Daily Sprint
+name: Routine Manager
 
 on:
-  workflow_dispatch: # Manual trigger from GitHub Actions
+  workflow_dispatch:
 
 jobs:
-  register:
+  routine-manager:
     runs-on: ubuntu-latest
 
     steps:
@@ -20,8 +20,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Register for Daily Sprint Challenge
+      - name: Run routine-manager
         env:
           MCP_SERVER_URL: https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp
           MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
-        run: npm run register-daily-sprint
+        run: npm run routine-manager

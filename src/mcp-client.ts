@@ -47,11 +47,17 @@ export class PokedRaceMCPClient {
       }),
     });
 
-    const data = await response.json();
+    const data = await response.json() as { error?: { message: string, code: number }, result?: any };
 
     if (data.error) {
-      console.error("Full error response:", JSON.stringify(data, null, 2));
-      throw new Error(`JSON-RPC Error: ${data.error.message} (code: ${data.error.code})`);
+      const errMsg = data.error.message || "Unknown error";
+      const errCode = data.error.code !== undefined ? data.error.code : -1;
+
+      // Allow specific error codes to be handled by caller if needed
+      if (errMsg.includes("already on a scavenging mission")) {
+        // Special handling or rethrow
+      }
+      throw new Error(`JSON-RPC Error: ${errMsg} (code: ${errCode})`);
     }
 
     return data.result;

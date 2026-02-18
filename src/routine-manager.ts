@@ -23,8 +23,6 @@ const RECOVERY_TARGET = 90;
 const RECALL_THRESHOLD = 10;
 const MAX_REPAIR_BAY = 5;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
-const ACTIVE_REGISTRATION_LOOKBACK_HOURS = 6;
-const DAILY_SPRINT_EVENT_PATTERN = /Daily Sprint|デイリースプリント/i;
 
 interface BotStatus {
   token: number;
@@ -91,22 +89,8 @@ async function getRegisteredBots(
     const result = await client.callTool("racing_get_my_registrations", {});
     const text = result.content[0].text;
     const ids = new Set<number>();
-    const minActiveStart =
-      Date.now() - ACTIVE_REGISTRATION_LOOKBACK_HOURS * 60 * 60 * 1000;
-
-    // Keep only recent Daily Sprint registrations; ignore stale/other events.
-    for (const block of text.split("---")) {
-      if (!DAILY_SPRINT_EVENT_PATTERN.test(block)) continue;
-
-      const tokenMatch = block.match(/🤖 Bot: #(\d+)/);
-      if (!tokenMatch) continue;
-
-      const isoMatch = block.match(/(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)/);
-      if (!isoMatch) continue;
-      const startedAt = Date.parse(isoMatch[1]);
-      if (Number.isNaN(startedAt) || startedAt < minActiveStart) continue;
-
-      ids.add(parseInt(tokenMatch[1], 10));
+    for (const match of text.matchAll(/🤖 Bot: #(\d+)/g)) {
+      ids.add(parseInt(match[1], 10));
     }
     return ids;
   } catch {

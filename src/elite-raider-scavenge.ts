@@ -118,19 +118,48 @@ function sleep(ms: number): Promise<void> {
 }
 
 async function getRegisteredBots(
-  client: PokedRaceMCPClient
+  client: PokedRaceMCPClient,
+  tokens: number[]
 ): Promise<Set<number>> {
-  try {
-    const result = await client.callTool("racing_get_my_registrations", {});
-    const text = result?.content?.[0]?.text || "";
-    const ids = new Set<number>();
-    for (const match of text.matchAll(/🤖 Bot: #(\d+)/g)) {
-      ids.add(parseInt(match[1], 10));
+  async function hasUpcomingRace(token: number): Promise<boolean> {
+    try {
+      const result = await client.callTool("racing_get_bot_races", {
+        token_index: token,
+        category: "upcoming",
+      });
+      const text = result?.content?.[0]?.text || "";
+
+      try {
+        const data = JSON.parse(text);
+        if (typeof data?.total_in_category === "number") {
+          return data.total_in_category > 0;
+        }
+        if (typeof data?.total_upcoming === "number") {
+          return data.total_upcoming > 0;
+        }
+        if (Array.isArray(data?.races)) {
+          return data.races.length > 0;
+        }
+      } catch {}
+
+      if (/"total_(?:in_category|upcoming)"\s*:\s*[1-9]/.test(text))
+        return true;
+      if (/"races"\s*:\s*\[(?!\s*\])/.test(text)) return true;
+      return false;
+    } catch {
+      return false;
     }
-    return ids;
-  } catch {
-    return new Set();
   }
+
+  const checks = await Promise.all(
+    tokens.map(async (token) => ({
+      token,
+      upcoming: await hasUpcomingRace(token),
+    }))
+  );
+  return new Set<number>(
+    checks.filter((c) => c.upcoming).map((c) => c.token)
+  );
 }
 
 async function getOwnedBots(client: PokedRaceMCPClient): Promise<ListedBot[]> {
@@ -310,11 +339,15 @@ async function main() {
   console.log(`Dry run: ${DRY_RUN ? "ON" : "OFF"}`);
   console.log(`Keep (Elite+Raider roster): ${[...keepTokens].join(", ")}\n`);
 
-  const [owned, registered] = await Promise.all([
-    getOwnedBots(client),
-    getRegisteredBots(client),
+  const owned = await getOwnedBots(client);
+  const candidateTokens = owned
+    .filter((b) => b.tier === "Elite" || b.tier === "Raider")
+    .map((b) => b.token);
+  const [registered, repairBayInit] = await Promise.all([
+    getRegisteredBots(client, candidateTokens),
+    getRepairBayTokens(client),
   ]);
-  let repairBayTokens = await getRepairBayTokens(client);
+  let repairBayTokens = repairBayInit;
 
   const targets = owned.filter(
     (b) => (b.tier === "Elite" || b.tier === "Raider") && !keepTokens.has(b.token)

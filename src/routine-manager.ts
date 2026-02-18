@@ -1,10 +1,12 @@
 /**
  * Routine Manager (15分間隔)
  *
- * レース未登録の全12体の日常管理:
- *   - Battery/Condition < 90% → 回復ループ (RepairBay / ChargingStation)
- *   - Battery/Condition >= 90% → ScrapHeaps でスカベンジ
- *   - Battery/Condition <= 10% → recall して回復ループへ
+ * ロースター対象の日常管理:
+ *   - レース登録済みはスキップ
+ *   - 未登録はできるだけ ScrapHeaps 継続
+ *   - Bat < 20 の場合は Jolt で回復を補助
+ *   - Cond < 25 は RepairBay 優先
+ *   - Bat >= 80 かつ Cond >= 40 で ScrapHeaps へ復帰
  *   - レース登録済み → スキップ
  */
 
@@ -19,8 +21,11 @@ const SERVER_URL =
   "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-const RECOVERY_TARGET = 90;
-const RECALL_THRESHOLD = 10;
+const SCAVENGE_MIN_BATTERY = 20;
+const SCAVENGE_MIN_CONDITION = 25;
+const REDEPLOY_BATTERY_TARGET = 80;
+const REDEPLOY_CONDITION_TARGET = 40;
+const MAX_JOLT_PER_BOT = 6;
 const MAX_REPAIR_BAY = 5;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 
@@ -98,6 +103,84 @@ async function getRegisteredBots(
   }
 }
 
+async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
+  try {
+    const res = await client.callTool("garage_list_batteries", {});
+    const text = res?.content?.[0]?.text || "";
+    const ids = new Set<number>();
+
+    try {
+      const data = JSON.parse(text);
+      const stack: unknown[] = [data];
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== "object") continue;
+        if (Array.isArray(cur)) {
+          for (const item of cur) stack.push(item);
+          continue;
+        }
+        const obj = cur as Record<string, unknown>;
+        for (const [k, v] of Object.entries(obj)) {
+          if (
+            /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
+            (typeof v === "number" || typeof v === "string")
+          ) {
+            const n = typeof v === "number" ? v : parseInt(v, 10);
+            if (Number.isInteger(n) && n > 0) ids.add(n);
+          }
+          if (v && typeof v === "object") stack.push(v);
+        }
+      }
+    } catch {}
+
+    if (ids.size === 0) {
+      for (const m of text.matchAll(/#(\d+)/g)) {
+        const n = parseInt(m[1], 10);
+        if (Number.isInteger(n) && n > 0) ids.add(n);
+      }
+    }
+
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
+
+async function joltBot(
+  client: PokedRaceMCPClient,
+  token: number,
+  batteryId: number
+): Promise<{
+  ok: boolean;
+  newBatteryLevel?: number;
+  overheated?: boolean;
+}> {
+  try {
+    const res = await client.callTool("garage_jolt_bot", {
+      token_index: token,
+      battery_id: batteryId,
+    });
+    if (res?.isError) return { ok: false };
+
+    const text = res?.content?.[0]?.text;
+    let newBatteryLevel: number | undefined;
+    let overheated = false;
+    if (typeof text === "string") {
+      try {
+        const data = JSON.parse(text);
+        if (typeof data?.bot?.new_battery_level === "number") {
+          newBatteryLevel = data.bot.new_battery_level;
+        }
+        overheated = !!data?.bot?.is_overheated;
+      } catch {}
+    }
+
+    return { ok: true, newBatteryLevel, overheated };
+  } catch {
+    return { ok: false };
+  }
+}
+
 async function recall(
   client: PokedRaceMCPClient,
   token: number
@@ -167,106 +250,167 @@ async function main() {
   let globalRepairBayTokens = await getGlobalRepairBayTokens(client);
   console.log(`🔧 RepairBay occupancy: ${globalRepairBayTokens.size}/${MAX_REPAIR_BAY}\n`);
 
+  // 4. Battery items for Jolt assist
+  let batteryIds = await getBatteries(client);
+  const triedBatteryIds = new Set<number>();
+  console.log(`🔋 Jolt batteries parsed: ${batteryIds.length}\n`);
+
+  const refillBatteryIds = async (): Promise<number> => {
+    const latest = await getBatteries(client);
+    let added = 0;
+    for (const id of latest) {
+      if (!triedBatteryIds.has(id) && !batteryIds.includes(id)) {
+        batteryIds.push(id);
+        added++;
+      }
+    }
+    return added;
+  };
+
   for (const bot of statuses) {
-    const tag = `#${bot.token} ${bot.name} (Bat:${bot.battery}% Cond:${bot.condition}% Zone:${bot.zone || "Idle"})`;
+    let battery = bot.battery;
+    let condition = bot.condition;
+    let zone = bot.zone || "Idle";
+    let isScavenging = bot.isScavenging;
+
+    const tag = () =>
+      `#${bot.token} ${bot.name} (Bat:${battery}% Cond:${condition}% Zone:${zone})`;
 
     // Skip registered bots
     if (registered.has(bot.token)) {
-      console.log(`🏁 ${tag}: registered, skip`);
+      console.log(`🏁 ${tag()}: registered, skip`);
       continue;
     }
 
-    // --- Case 1: Currently scavenging in ScrapHeaps ---
-    if (bot.zone === "ScrapHeaps") {
-      if (bot.battery <= RECALL_THRESHOLD || bot.condition <= RECALL_THRESHOLD) {
-        console.log(`🔌 ${tag}: low stats → recall & recover`);
-        await sendTo(client, bot.token, "ChargingStation");
-        globalRepairBayTokens.delete(bot.token);
-      } else {
-        console.log(`⛏️ ${tag}: scavenging OK`);
-      }
-      continue;
-    }
-
-    // --- Case 2: Needs recovery (< 90%) ---
-    if (bot.battery < RECOVERY_TARGET || bot.condition < RECOVERY_TARGET) {
-      // If scavenging somewhere other than recovery zones, recall first
-      if (
-        bot.isScavenging &&
-        bot.zone !== "RepairBay" &&
-        bot.zone !== "ChargingStation"
-      ) {
+    // --- Case 1: keep scavenging unless hard thresholds are hit ---
+    if (zone === "ScrapHeaps") {
+      if (battery < SCAVENGE_MIN_BATTERY || condition < SCAVENGE_MIN_CONDITION) {
+        console.log(`🔌 ${tag()}: threshold hit → recall & recover`);
         await recall(client, bot.token);
         await new Promise((r) => setTimeout(r, 300));
+        zone = "Idle";
+        isScavenging = false;
+      } else {
+        console.log(`⛏️ ${tag()}: scavenging OK`);
+        continue;
+      }
+    }
+
+    // --- Case 2: low battery gets Jolt assist first ---
+    if (battery < SCAVENGE_MIN_BATTERY) {
+      let joltAttempts = 0;
+      while (battery < REDEPLOY_BATTERY_TARGET && joltAttempts < MAX_JOLT_PER_BOT) {
+        if (batteryIds.length === 0) {
+          const added = await refillBatteryIds();
+          if (added === 0) break;
+          console.log(`⚡ ${tag()}: battery list refreshed (+${added})`);
+        }
+        const batteryId = batteryIds.shift()!;
+        triedBatteryIds.add(batteryId);
+        const j = await joltBot(client, bot.token, batteryId);
+        joltAttempts++;
+
+        if (!j.ok) continue;
+        if (typeof j.newBatteryLevel === "number") {
+          battery = j.newBatteryLevel;
+        } else {
+          const refreshed = await getBotStatus(client, bot.token);
+          if (refreshed) battery = refreshed.battery;
+        }
+        if (j.overheated) break;
       }
 
-      // Condition recovery: RepairBay
-      if (bot.condition < RECOVERY_TARGET) {
-        if (bot.zone === "RepairBay") {
-          console.log(`🔧 ${tag}: repairing`);
-          globalRepairBayTokens.add(bot.token);
-          continue;
-        }
+      const refreshed = await getBotStatus(client, bot.token);
+      if (refreshed) {
+        battery = refreshed.battery;
+        condition = refreshed.condition;
+        zone = refreshed.zone || "Idle";
+        isScavenging = refreshed.isScavenging;
+      }
+    }
+
+    // --- Case 3: condition recovery first ---
+    if (condition < SCAVENGE_MIN_CONDITION) {
+      if (zone === "RepairBay") {
+        console.log(`🔧 ${tag()}: repairing`);
+        globalRepairBayTokens.add(bot.token);
+        continue;
+      }
+      if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
+        console.log(`🔧 ${tag()}: → RepairBay`);
+        const ok = await sendTo(client, bot.token, "RepairBay");
+        if (ok) globalRepairBayTokens.add(bot.token);
+        continue;
+      }
+
+      const evicted = await evictOneNonPriorityFromRepairBay(
+        client,
+        globalRepairBayTokens,
+        registered
+      );
+      if (evicted !== null) {
+        globalRepairBayTokens = await getGlobalRepairBayTokens(client);
         if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
-          console.log(`🔧 ${tag}: → RepairBay`);
+          console.log(`🔧 ${tag()}: priority slot secured → RepairBay`);
           const ok = await sendTo(client, bot.token, "RepairBay");
           if (ok) globalRepairBayTokens.add(bot.token);
           continue;
         }
-
-        // RepairBay full: evict non-priority bot to reserve slot for routine bots
-        const evicted = await evictOneNonPriorityFromRepairBay(
-          client,
-          globalRepairBayTokens,
-          registered
-        );
-        if (evicted !== null) {
-          globalRepairBayTokens = await getGlobalRepairBayTokens(client);
-          if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
-            console.log(`🔧 ${tag}: priority slot secured → RepairBay`);
-            const ok = await sendTo(client, bot.token, "RepairBay");
-            if (ok) globalRepairBayTokens.add(bot.token);
-            continue;
-          }
-        }
-
-        // Still full → wait at ChargingStation (also charges battery)
-        if (bot.zone !== "ChargingStation") {
-          console.log(`⏳ ${tag}: RepairBay full (no slot) → ChargingStation`);
-          await sendTo(client, bot.token, "ChargingStation");
-          globalRepairBayTokens.delete(bot.token);
-        } else {
-          console.log(`⏳ ${tag}: waiting for RepairBay`);
-        }
-        continue;
       }
 
-      // Battery recovery: ChargingStation
-      if (bot.battery < RECOVERY_TARGET) {
-        if (bot.zone === "ChargingStation") {
-          console.log(`🔌 ${tag}: charging`);
-        } else {
-          console.log(`🔌 ${tag}: → ChargingStation`);
-          await sendTo(client, bot.token, "ChargingStation");
-          globalRepairBayTokens.delete(bot.token);
-        }
-        continue;
-      }
-    }
-
-    // --- Case 3: Fully recovered → ScrapHeaps ---
-    if (bot.battery >= RECOVERY_TARGET && bot.condition >= RECOVERY_TARGET) {
-      if (bot.zone !== "ScrapHeaps") {
-        console.log(`⛏️ ${tag}: recovered → ScrapHeaps`);
-        await sendTo(client, bot.token, "ScrapHeaps");
+      if (zone !== "ChargingStation") {
+        console.log(`⏳ ${tag()}: RepairBay full → ChargingStation`);
+        await sendTo(client, bot.token, "ChargingStation");
         globalRepairBayTokens.delete(bot.token);
       } else {
-        console.log(`⛏️ ${tag}: scavenging OK`);
+        console.log(`⏳ ${tag()}: waiting for RepairBay`);
       }
       continue;
     }
 
-    console.log(`❓ ${tag}: unhandled state`);
+    // --- Case 4: battery not ready yet ---
+    if (battery < REDEPLOY_BATTERY_TARGET) {
+      if (zone === "ChargingStation") {
+        console.log(`🔌 ${tag()}: charging`);
+      } else {
+        console.log(`🔌 ${tag()}: → ChargingStation`);
+        await sendTo(client, bot.token, "ChargingStation");
+        globalRepairBayTokens.delete(bot.token);
+      }
+      continue;
+    }
+
+    // --- Case 5: ready enough to re-enter scavenging ---
+    if (battery >= REDEPLOY_BATTERY_TARGET && condition >= REDEPLOY_CONDITION_TARGET) {
+      if (zone !== "ScrapHeaps" || !isScavenging) {
+        console.log(`⛏️ ${tag()}: recovered → ScrapHeaps`);
+        await sendTo(client, bot.token, "ScrapHeaps");
+        globalRepairBayTokens.delete(bot.token);
+      } else {
+        console.log(`⛏️ ${tag()}: scavenging OK`);
+      }
+      continue;
+    }
+
+    // Mid condition range (25-39): wait in charging or repair when available
+    if (condition < REDEPLOY_CONDITION_TARGET) {
+      if (zone === "RepairBay") {
+        console.log(`🔧 ${tag()}: topping condition in RepairBay`);
+        globalRepairBayTokens.add(bot.token);
+      } else if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
+        console.log(`🔧 ${tag()}: mid condition → RepairBay`);
+        const ok = await sendTo(client, bot.token, "RepairBay");
+        if (ok) globalRepairBayTokens.add(bot.token);
+      } else if (zone !== "ChargingStation") {
+        console.log(`🔌 ${tag()}: cond mid, RepairBay full → ChargingStation`);
+        await sendTo(client, bot.token, "ChargingStation");
+      } else {
+        console.log(`🔌 ${tag()}: waiting (RepairBay full)`);
+      }
+      continue;
+    }
+
+    console.log(`❓ ${tag()}: unhandled state`);
   }
 
   console.log("\n✅ Routine complete");

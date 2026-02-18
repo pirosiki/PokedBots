@@ -87,52 +87,112 @@ async function getBotStatus(
   }
 }
 
-async function getRegisteredBots(
-  client: PokedRaceMCPClient
-): Promise<Set<number>> {
+async function hasUpcomingRace(
+  client: PokedRaceMCPClient,
+  token: number
+): Promise<boolean> {
   try {
-    const result = await client.callTool("racing_get_my_registrations", {});
-    const text = result.content[0].text;
-    const ids = new Set<number>();
-    for (const match of text.matchAll(/🤖 Bot: #(\d+)/g)) {
-      ids.add(parseInt(match[1], 10));
-    }
-    return ids;
+    const result = await client.callTool("racing_get_bot_races", {
+      token_index: token,
+      category: "upcoming",
+    });
+    const text = result?.content?.[0]?.text || "";
+
+    try {
+      const data = JSON.parse(text);
+      if (typeof data?.total_in_category === "number") {
+        return data.total_in_category > 0;
+      }
+      if (typeof data?.total_upcoming === "number") {
+        return data.total_upcoming > 0;
+      }
+      if (Array.isArray(data?.races)) {
+        return data.races.length > 0;
+      }
+    } catch {}
+
+    if (/"total_(?:in_category|upcoming)"\s*:\s*[1-9]/.test(text)) return true;
+    if (/"races"\s*:\s*\[(?!\s*\])/.test(text)) return true;
+    return false;
   } catch {
-    return new Set();
+    return false;
   }
+}
+
+async function getRegisteredBots(
+  client: PokedRaceMCPClient,
+  tokens: number[]
+): Promise<Set<number>> {
+  const checks = await Promise.all(
+    tokens.map(async (token) => ({
+      token,
+      upcoming: await hasUpcomingRace(client, token),
+    }))
+  );
+  return new Set<number>(
+    checks.filter((c) => c.upcoming).map((c) => c.token)
+  );
 }
 
 async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
   try {
     const res = await client.callTool("garage_list_batteries", {});
     const text = res?.content?.[0]?.text || "";
-    const ids = new Set<number>();
+    let sawBatteryArray = false;
+    const usableByStored: Array<{ id: number; stored: number }> = [];
 
     try {
       const data = JSON.parse(text);
-      const stack: unknown[] = [data];
-      while (stack.length > 0) {
-        const cur = stack.pop();
-        if (!cur || typeof cur !== "object") continue;
-        if (Array.isArray(cur)) {
-          for (const item of cur) stack.push(item);
-          continue;
-        }
-        const obj = cur as Record<string, unknown>;
-        for (const [k, v] of Object.entries(obj)) {
-          if (
-            /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
-            (typeof v === "number" || typeof v === "string")
-          ) {
-            const n = typeof v === "number" ? v : parseInt(v, 10);
-            if (Number.isInteger(n) && n > 0) ids.add(n);
+
+      if (Array.isArray(data?.batteries)) {
+        sawBatteryArray = true;
+        for (const b of data.batteries) {
+          const id = Number((b as any)?.id);
+          const stored = Number((b as any)?.stored_kwh ?? 0);
+          const isOperational = (b as any)?.is_operational === true;
+          if (Number.isInteger(id) && id > 0 && isOperational && stored > 0) {
+            usableByStored.push({ id, stored });
           }
-          if (v && typeof v === "object") stack.push(v);
+        }
+      } else {
+        const ids = new Set<number>();
+        const stack: unknown[] = [data];
+        while (stack.length > 0) {
+          const cur = stack.pop();
+          if (!cur || typeof cur !== "object") continue;
+          if (Array.isArray(cur)) {
+            for (const item of cur) stack.push(item);
+            continue;
+          }
+          const obj = cur as Record<string, unknown>;
+          for (const [k, v] of Object.entries(obj)) {
+            if (
+              /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
+              (typeof v === "number" || typeof v === "string")
+            ) {
+              const n = typeof v === "number" ? v : parseInt(v, 10);
+              if (Number.isInteger(n) && n > 0) ids.add(n);
+            }
+            if (v && typeof v === "object") stack.push(v);
+          }
+        }
+        if (ids.size > 0) {
+          return [...ids];
         }
       }
     } catch {}
 
+    if (usableByStored.length > 0) {
+      usableByStored.sort((a, b) => b.stored - a.stored);
+      return usableByStored.map((b) => b.id);
+    }
+
+    if (sawBatteryArray) {
+      // Parsed structured battery list and found none operational/usable.
+      return [];
+    }
+
+    const ids = new Set<number>();
     if (ids.size === 0) {
       for (const m of text.matchAll(/#(\d+)/g)) {
         const n = parseInt(m[1], 10);
@@ -241,7 +301,7 @@ async function main() {
   ).filter((s): s is BotStatus => s !== null);
 
   // 2. Get registered bots
-  const registered = await getRegisteredBots(client);
+  const registered = await getRegisteredBots(client, ALL_TOKENS);
   console.log(
     `🏁 Registered: ${registered.size > 0 ? [...registered].join(", ") : "none"}\n`
   );

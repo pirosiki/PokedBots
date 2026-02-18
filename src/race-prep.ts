@@ -4,7 +4,7 @@
  * Daily Sprintの2時間前に実行:
  *   1. イベント取得 → 地形取得（フォールバック付き）
  *   2. 出走体選出（各Tier × 地形ごとの上限で選出）
- *   3. recall → RepairBay(Cond<70%) → 有料Charge → Jolt(100%まで) → 有料Repair → 登録
+ *   3. recall → RepairBay(Cond>=70まで待機) → 有料Charge → Jolt(100%まで) → 有料Repair → 登録
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -42,6 +42,9 @@ const PER_TERRAIN_LIMITS: Record<
   Junker: { MetalRoads: 2 },
   Scrap: { ScrapHeaps: 2 },
 };
+const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
+const REPAIR_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const REGISTRATION_BUFFER_MINUTES = 15;
 
 function predictTerrains(raceTimeUTC: Date): string[] {
   const totalSec = Math.floor(raceTimeUTC.getTime() / 1000);
@@ -150,6 +153,47 @@ async function sendToRepairBay(client: PokedRaceMCPClient, token: number) {
   } catch (e: any) {
     console.error(`   Failed: ${e.message}`);
   }
+}
+
+async function waitForConditionRecovery(
+  client: PokedRaceMCPClient,
+  token: number,
+  targetCondition: number,
+  deadlineMs: number
+): Promise<{ reached: boolean; latestCondition: number }> {
+  let latestCondition = 0;
+
+  await sendToRepairBay(client, token);
+  await new Promise((r) => setTimeout(r, 1000));
+
+  while (Date.now() < deadlineMs) {
+    const details = await getBotDetails(client, token);
+    latestCondition = details?.condition?.condition ?? latestCondition;
+    const zone = details?.active_scavenging?.zone;
+    const isScavenging = !!details?.active_scavenging?.status?.includes("Active");
+
+    if (latestCondition >= targetCondition) {
+      return { reached: true, latestCondition };
+    }
+
+    // Keep bot in RepairBay while waiting for passive recovery.
+    if (!(isScavenging && zone === "RepairBay")) {
+      await sendToRepairBay(client, token);
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
+    const waitMs = Math.min(
+      REPAIR_CHECK_INTERVAL_MS,
+      Math.max(0, deadlineMs - Date.now())
+    );
+    if (waitMs > 0) {
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+
+  const finalDetails = await getBotDetails(client, token);
+  latestCondition = finalDetails?.condition?.condition ?? latestCondition;
+  return { reached: latestCondition >= targetCondition, latestCondition };
 }
 
 async function paidCharge(client: PokedRaceMCPClient, token: number) {
@@ -393,16 +437,34 @@ async function main() {
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    // b. RepairBay if Condition < 70%
-    if (cond < 70) {
-      await sendToRepairBay(client, bot.token);
-      // Wait for repair (passive — will be picked up next run if needed)
-      // For now, still proceed with charge/repair/register
-      console.log(`   ⏳ Condition low (${cond}%), sent to RepairBay`);
-      // Still attempt registration — the paid repair below should help
-      await new Promise((r) => setTimeout(r, 1000));
+    // b. If condition is low, wait in RepairBay until threshold before paid repair.
+    if (cond < MIN_CONDITION_BEFORE_PAID_REPAIR) {
+      const deadlineMs =
+        event.startTime.getTime() - REGISTRATION_BUFFER_MINUTES * 60 * 1000;
+      console.log(
+        `   ⏳ Condition low (${cond}%), waiting for >= ${MIN_CONDITION_BEFORE_PAID_REPAIR}% in RepairBay`
+      );
+
+      const recovery = await waitForConditionRecovery(
+        client,
+        bot.token,
+        MIN_CONDITION_BEFORE_PAID_REPAIR,
+        deadlineMs
+      );
+
       await recall(client, bot.token);
       await new Promise((r) => setTimeout(r, 300));
+
+      if (!recovery.reached) {
+        console.log(
+          `   ❌ Condition stayed below ${MIN_CONDITION_BEFORE_PAID_REPAIR}% (latest ${recovery.latestCondition}%). Skip registration for this bot.`
+        );
+        continue;
+      }
+
+      console.log(
+        `   ✅ Condition recovered to ${recovery.latestCondition}% (>= ${MIN_CONDITION_BEFORE_PAID_REPAIR}%)`
+      );
     }
 
     // c. Paid Charge (→ Overcharge via recharge_robot)

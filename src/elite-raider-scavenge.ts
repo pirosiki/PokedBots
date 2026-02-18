@@ -207,7 +207,8 @@ async function moveToZone(
     return { ok: true };
   }
 
-  if (active) {
+  // Clear any existing/pending scavenging state before new assignment.
+  if (active || currentZone !== "Idle") {
     await recall(client, token);
     await sleep(300);
   }
@@ -235,19 +236,33 @@ async function moveWithFallback(
   let latestZone = getZone(latest);
   let latestActive = isActiveScavenging(latest);
   let latestCondition = getCondition(latest);
+  let latestBattery = getBattery(latest);
+
+  // If already in any valid working zone, don't treat as failure.
+  if (
+    latestActive &&
+    (latestZone === TARGET_ZONE ||
+      latestZone === CHARGING_ZONE ||
+      latestZone === REPAIR_ZONE)
+  ) {
+    return { ok: true, finalZone: latestZone, fallbackUsed: true };
+  }
   if (latestActive && latestZone === desiredZone) {
     return { ok: true, finalZone: desiredZone, fallbackUsed: false };
   }
 
   const fallbackCandidates: string[] = [];
+  fallbackCandidates.push(desiredZone); // retry once (transient failures)
   if (latestCondition < REPAIR_CONDITION_THRESHOLD) {
     fallbackCandidates.push(REPAIR_ZONE);
   }
   fallbackCandidates.push(CHARGING_ZONE);
+  if (latestBattery >= REDEPLOY_BATTERY_THRESHOLD) {
+    fallbackCandidates.push(TARGET_ZONE);
+  }
 
   const seen = new Set<string>();
   const orderedFallbacks = fallbackCandidates.filter((z) => {
-    if (z === desiredZone) return false;
     if (seen.has(z)) return false;
     seen.add(z);
     return true;
@@ -272,6 +287,7 @@ async function moveWithFallback(
     latestZone = getZone(latest);
     latestActive = isActiveScavenging(latest);
     latestCondition = getCondition(latest);
+    latestBattery = getBattery(latest);
     if (latestActive && latestZone === zone) {
       return { ok: true, finalZone: zone, fallbackUsed: true };
     }

@@ -43,7 +43,7 @@ const PER_TERRAIN_LIMITS: Record<
   Scrap: { ScrapHeaps: 2 },
 };
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
-const REPAIR_CHECK_INTERVAL_MS = 2 * 60 * 1000;
+const REPAIR_CHECK_INTERVAL_MS = 30 * 60 * 1000;
 const REGISTRATION_BUFFER_MINUTES = 15;
 
 function predictTerrains(raceTimeUTC: Date): string[] {

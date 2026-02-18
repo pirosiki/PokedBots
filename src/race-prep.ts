@@ -238,12 +238,54 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
   try {
     const res = await client.callTool("garage_list_batteries", {});
     const text = res.content[0].text;
+    const ids = new Set<number>();
+
+    // JSON parser (supports array/object/nested payloads)
     try {
       const data = JSON.parse(text);
-      if (Array.isArray(data)) return data.map((b: any) => b.id);
+      const stack: unknown[] = [data];
+      while (stack.length > 0) {
+        const cur = stack.pop();
+        if (!cur || typeof cur !== "object") continue;
+
+        if (Array.isArray(cur)) {
+          for (const item of cur) stack.push(item);
+          continue;
+        }
+
+        const obj = cur as Record<string, unknown>;
+        for (const [k, v] of Object.entries(obj)) {
+          if (
+            /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
+            (typeof v === "number" || typeof v === "string")
+          ) {
+            const n = typeof v === "number" ? v : parseInt(v, 10);
+            if (Number.isInteger(n) && n > 0) ids.add(n);
+          }
+          if (v && typeof v === "object") stack.push(v);
+        }
+      }
     } catch {}
-    // Regex fallback
-    return [...text.matchAll(/#(\d+)/g)].map((m) => parseInt(m[1]));
+
+    // Text fallback for non-JSON responses
+    if (ids.size === 0) {
+      const patterns = [
+        /"id"\s*:\s*(\d+)/g,
+        /\bbattery(?:[_\s-]?id)?\s*[:#=]\s*(\d+)/gi,
+        /🔋\s*(?:Battery|バッテリー)?\s*#?(\d+)/gi,
+        /\bID\s*[:#]\s*(\d+)/gi,
+        /#(\d+)/g,
+      ];
+
+      for (const re of patterns) {
+        for (const m of text.matchAll(re)) {
+          const n = parseInt(m[1], 10);
+          if (Number.isInteger(n) && n > 0) ids.add(n);
+        }
+      }
+    }
+
+    return [...ids];
   } catch {
     return [];
   }
@@ -303,10 +345,24 @@ async function main() {
   }
 
   // 4. Get batteries for Jolt
-  const batteryIds = await getBatteries(client);
-  let batteryIdx = 0;
+  let batteryIds = await getBatteries(client);
+  const triedBatteryIds = new Set<number>();
   if (batteryIds.length === 0) {
     console.log("⚠️ No batteries found for Jolt\n");
+  } else {
+    console.log(`🔋 Parsed battery items: ${batteryIds.length}`);
+  }
+
+  async function refillBatteryIds(): Promise<number> {
+    const latest = await getBatteries(client);
+    let added = 0;
+    for (const id of latest) {
+      if (!triedBatteryIds.has(id) && !batteryIds.includes(id)) {
+        batteryIds.push(id);
+        added++;
+      }
+    }
+    return added;
   }
 
   // 5. Process each racer
@@ -358,9 +414,19 @@ async function main() {
     let currentBattery = afterCharge?.condition?.battery ?? bat;
 
     // d. Jolt repeatedly until battery reaches 100% (or stop conditions)
-    while (currentBattery < 100 && batteryIdx < batteryIds.length) {
-      const joltResult = await joltBot(client, bot.token, batteryIds[batteryIdx]);
-      batteryIdx++;
+    while (currentBattery < 100) {
+      if (batteryIds.length === 0) {
+        const added = await refillBatteryIds();
+        if (added > 0) {
+          console.log(`   🔄 Refreshed battery list (+${added})`);
+        } else {
+          break;
+        }
+      }
+
+      const batteryId = batteryIds.shift()!;
+      triedBatteryIds.add(batteryId);
+      const joltResult = await joltBot(client, bot.token, batteryId);
       await new Promise((r) => setTimeout(r, 300));
 
       if (!joltResult.ok) {
@@ -381,7 +447,7 @@ async function main() {
     }
 
     if (currentBattery < 100) {
-      if (batteryIdx >= batteryIds.length) {
+      if (batteryIds.length === 0) {
         console.log(`   🔋 Battery item exhausted at ${currentBattery}%`);
       } else {
         console.log(`   ⚠️ Jolt ended at ${currentBattery}%`);

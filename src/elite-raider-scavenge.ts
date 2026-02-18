@@ -52,7 +52,11 @@ interface BotDetails {
 
 const RECALL_BATTERY_THRESHOLD = 80;
 const REPAIR_CONDITION_THRESHOLD = 30;
-const REDEPLOY_BATTERY_THRESHOLD = 95;
+const redeployThresholdRaw = Number(process.env.REDEPLOY_BATTERY_THRESHOLD);
+const REDEPLOY_BATTERY_THRESHOLD =
+  Number.isFinite(redeployThresholdRaw) && redeployThresholdRaw >= 0
+    ? Math.min(100, redeployThresholdRaw)
+    : 100;
 const MAX_REPAIR_BAY = 5;
 const CHARGING_ZONE = "ChargingStation";
 const REPAIR_ZONE = "RepairBay";
@@ -173,16 +177,17 @@ async function sendToZone(
   client: PokedRaceMCPClient,
   token: number,
   zone: string
-): Promise<boolean> {
+): Promise<{ ok: boolean; error?: string }> {
   try {
     await client.callTool("garage_start_scavenging", {
       token_index: token,
       zone,
     });
-    return true;
+    return { ok: true };
   } catch (e: any) {
-    console.error(`   Failed start_scavenging #${token}: ${e.message}`);
-    return false;
+    const msg = e?.message || "unknown error";
+    console.error(`   Failed start_scavenging #${token}: ${msg}`);
+    return { ok: false, error: msg };
   }
 }
 
@@ -192,14 +197,14 @@ async function moveToZone(
   active: boolean,
   currentZone: string,
   desiredZone: string
-): Promise<boolean> {
+): Promise<{ ok: boolean; error?: string }> {
   if (active && currentZone === desiredZone) {
-    return true;
+    return { ok: true };
   }
 
   if (DRY_RUN) {
     console.log(`   -> dry-run: would move to ${desiredZone}`);
-    return true;
+    return { ok: true };
   }
 
   if (active) {
@@ -207,9 +212,72 @@ async function moveToZone(
     await sleep(300);
   }
 
-  const ok = await sendToZone(client, token, desiredZone);
+  const result = await sendToZone(client, token, desiredZone);
   await sleep(300);
-  return ok;
+  return result;
+}
+
+async function moveWithFallback(
+  client: PokedRaceMCPClient,
+  token: number,
+  active: boolean,
+  currentZone: string,
+  desiredZone: string,
+  repairBayTokens: Set<number>
+): Promise<{ ok: boolean; finalZone: string; fallbackUsed: boolean }> {
+  const primary = await moveToZone(client, token, active, currentZone, desiredZone);
+  if (primary.ok) {
+    return { ok: true, finalZone: desiredZone, fallbackUsed: false };
+  }
+
+  // Re-read status once: API can fail even when move succeeded server-side.
+  let latest = await getBotDetails(client, token);
+  let latestZone = getZone(latest);
+  let latestActive = isActiveScavenging(latest);
+  let latestCondition = getCondition(latest);
+  if (latestActive && latestZone === desiredZone) {
+    return { ok: true, finalZone: desiredZone, fallbackUsed: false };
+  }
+
+  const fallbackCandidates: string[] = [];
+  if (latestCondition < REPAIR_CONDITION_THRESHOLD) {
+    fallbackCandidates.push(REPAIR_ZONE);
+  }
+  fallbackCandidates.push(CHARGING_ZONE);
+
+  const seen = new Set<string>();
+  const orderedFallbacks = fallbackCandidates.filter((z) => {
+    if (z === desiredZone) return false;
+    if (seen.has(z)) return false;
+    seen.add(z);
+    return true;
+  });
+
+  for (const zone of orderedFallbacks) {
+    if (
+      zone === REPAIR_ZONE &&
+      !(latestActive && latestZone === REPAIR_ZONE) &&
+      repairBayTokens.size >= MAX_REPAIR_BAY
+    ) {
+      continue;
+    }
+
+    console.log(`   -> fallback move to ${zone}`);
+    const fb = await moveToZone(client, token, latestActive, latestZone, zone);
+    if (fb.ok) {
+      return { ok: true, finalZone: zone, fallbackUsed: true };
+    }
+
+    latest = await getBotDetails(client, token);
+    latestZone = getZone(latest);
+    latestActive = isActiveScavenging(latest);
+    latestCondition = getCondition(latest);
+    if (latestActive && latestZone === zone) {
+      return { ok: true, finalZone: zone, fallbackUsed: true };
+    }
+  }
+
+  return { ok: false, finalZone: latestZone, fallbackUsed: true };
 }
 
 async function main() {
@@ -250,6 +318,7 @@ async function main() {
   let skippedRegistered = 0;
   let maintenanceMove = 0;
   let lowBatteryRecall = 0;
+  let fallbackMove = 0;
   let failed = 0;
 
   for (const t of targets) {
@@ -307,23 +376,38 @@ async function main() {
       }
     } else {
       desiredZone = CHARGING_ZONE;
-      console.log("   -> condition >= 30 and battery < 95, send to ChargingStation");
+      console.log(
+        `   -> condition >= 30 and battery < ${REDEPLOY_BATTERY_THRESHOLD}, send to ChargingStation`
+      );
     }
 
-    const ok = await moveToZone(client, t.token, active, zone, desiredZone);
-    if (!ok) {
+    const moveResult = await moveWithFallback(
+      client,
+      t.token,
+      active,
+      zone,
+      desiredZone,
+      repairBayTokens
+    );
+    if (!moveResult.ok) {
       failed++;
       continue;
     }
 
-    if (active && zone === REPAIR_ZONE && desiredZone !== REPAIR_ZONE) {
-      repairBayTokens.delete(t.token);
-    }
-    if (desiredZone === REPAIR_ZONE) {
-      repairBayTokens.add(t.token);
+    if (moveResult.fallbackUsed) {
+      fallbackMove++;
     }
 
-    if (desiredZone === TARGET_ZONE) moved++;
+    if (active && zone === REPAIR_ZONE && moveResult.finalZone !== REPAIR_ZONE) {
+      repairBayTokens.delete(t.token);
+    }
+    if (moveResult.finalZone === REPAIR_ZONE) {
+      repairBayTokens.add(t.token);
+    } else {
+      repairBayTokens.delete(t.token);
+    }
+
+    if (moveResult.finalZone === TARGET_ZONE) moved++;
     else maintenanceMove++;
   }
 
@@ -332,6 +416,7 @@ async function main() {
   console.log(`Kept scavenging (battery >= 80): ${keepScavenging}`);
   console.log(`Low-battery recalls (<80): ${lowBatteryRecall}`);
   console.log(`Moved to maintenance zones (Repair/Charge): ${maintenanceMove}`);
+  console.log(`Moved by fallback recovery: ${fallbackMove}`);
   console.log(`Skipped (registered): ${skippedRegistered}`);
   console.log(`Failed: ${failed}`);
 

@@ -3,7 +3,7 @@
  *
  * Daily Sprintの2時間前に実行:
  *   1. イベント取得 → 地形取得（フォールバック付き）
- *   2. 8体選出（各Tier × 地形マッチ、最大2体/Tier）
+ *   2. 出走体選出（各Tier × 地形ごとの上限で選出）
  *   3. recall → RepairBay(Cond<70%) → 有料Charge → Jolt(100%まで) → 有料Repair → 登録
  */
 
@@ -26,6 +26,23 @@ const TERRAIN_PAIRS: [string, string][] = [
   ["MetalRoads", "ScrapHeaps"],
 ];
 
+const TIER_ORDER = ["Elite", "Raider", "Junker", "Scrap"] as const;
+const TERRAIN_ORDER: BotEntry["terrain"][] = [
+  "MetalRoads",
+  "WastelandSand",
+  "ScrapHeaps",
+];
+const BASE_PER_TERRAIN_LIMIT = 1;
+const PER_TERRAIN_LIMITS: Record<
+  string,
+  Partial<Record<BotEntry["terrain"], number>>
+> = {
+  Elite: { MetalRoads: 2, ScrapHeaps: 2 },
+  Raider: { MetalRoads: 2 },
+  Junker: { MetalRoads: 2 },
+  Scrap: { ScrapHeaps: 2 },
+};
+
 function predictTerrains(raceTimeUTC: Date): string[] {
   const totalSec = Math.floor(raceTimeUTC.getTime() / 1000);
   const secInDay = totalSec % 86400;
@@ -37,6 +54,10 @@ function predictTerrains(raceTimeUTC: Date): string[] {
 
 function normalizeTerrain(t: string): string {
   return t.replace(/\s+/g, "");
+}
+
+function isRosterTerrain(terrain: string): terrain is BotEntry["terrain"] {
+  return TERRAIN_ORDER.includes(terrain as BotEntry["terrain"]);
 }
 
 // --- Event discovery ---
@@ -258,13 +279,17 @@ async function main() {
     console.log(`🌍 Terrains: ${terrains.join(", ")}`);
   }
 
-  // 3. Select racers (max 2 per Tier matching terrain)
+  // 3. Select racers (per Tier × per terrain limit)
   const selected: BotEntry[] = [];
-  for (const tier of ["Elite", "Raider", "Junker", "Scrap"]) {
-    const candidates = ROSTER[tier].filter((b) =>
-      terrains.includes(b.terrain)
-    );
-    selected.push(...candidates.slice(0, 2));
+  const activeTerrains = terrains.filter(isRosterTerrain);
+  for (const tier of TIER_ORDER) {
+    const tierRoster = ROSTER[tier] || [];
+    for (const terrain of activeTerrains) {
+      const perTerrainLimit =
+        PER_TERRAIN_LIMITS[tier]?.[terrain] ?? BASE_PER_TERRAIN_LIMIT;
+      const candidates = tierRoster.filter((b) => b.terrain === terrain);
+      selected.push(...candidates.slice(0, perTerrainLimit));
+    }
   }
 
   console.log(

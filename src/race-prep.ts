@@ -4,7 +4,7 @@
  * Daily Sprintの2時間前に実行:
  *   1. イベント取得 → 地形取得（フォールバック付き）
  *   2. 出走体選出（各Tier × 地形ごとの上限で選出）
- *   3. recall → RepairBay(Cond>=70まで待機) → 有料Charge → Jolt(100%まで) → 有料Repair → 登録
+ *   3. 先に登録 → その後にCond/Batメンテ（Cond>=70後に有料Repair）
  */
 
 import { PokedRaceMCPClient } from "./mcp-client.js";
@@ -43,8 +43,9 @@ const PER_TERRAIN_LIMITS: Record<
   Scrap: { ScrapHeaps: 2 },
 };
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
-const REPAIR_CHECK_INTERVAL_MS = 30 * 60 * 1000;
+const REPAIR_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const REGISTRATION_BUFFER_MINUTES = 15;
+const MAX_REPAIR_BAY = 5;
 
 function predictTerrains(raceTimeUTC: Date): string[] {
   const totalSec = Math.floor(raceTimeUTC.getTime() / 1000);
@@ -143,57 +144,65 @@ async function recall(client: PokedRaceMCPClient, token: number) {
   } catch {}
 }
 
-async function sendToRepairBay(client: PokedRaceMCPClient, token: number) {
-  console.log(`   🔧 → RepairBay #${token}`);
+function parseRepairBayTokensFromList(text: string): Set<number> {
+  const tokens = new Set<number>();
+  const re = /🏎️ PokedBot #(\d+)([\s\S]*?)(?=\n🏎️ PokedBot #|$)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const token = parseInt(m[1], 10);
+    const block = m[2] || "";
+    if (/🔍 SCAVENGING:\s*Active[\s\S]*\bin RepairBay\b/.test(block)) {
+      tokens.add(token);
+    }
+  }
+  return tokens;
+}
+
+async function getGlobalRepairBayTokens(
+  client: PokedRaceMCPClient
+): Promise<Set<number>> {
   try {
-    await client.callTool("garage_start_scavenging", {
-      token_index: token,
-      zone: "RepairBay",
-    });
-  } catch (e: any) {
-    console.error(`   Failed: ${e.message}`);
+    const result = await client.callTool("garage_list_my_pokedbots", {});
+    const text = result?.content?.[0]?.text || "";
+    return parseRepairBayTokensFromList(text);
+  } catch {
+    return new Set<number>();
   }
 }
 
-async function waitForConditionRecovery(
+async function sendToZone(
   client: PokedRaceMCPClient,
   token: number,
-  targetCondition: number,
-  deadlineMs: number
-): Promise<{ reached: boolean; latestCondition: number }> {
-  let latestCondition = 0;
+  zone: "RepairBay" | "ChargingStation"
+): Promise<boolean> {
+  try {
+    await client.callTool("garage_start_scavenging", {
+      token_index: token,
+      zone,
+    });
+    return true;
+  } catch (e: any) {
+    console.error(`   Failed to send #${token} to ${zone}: ${e.message}`);
+    return false;
+  }
+}
 
-  await sendToRepairBay(client, token);
-  await new Promise((r) => setTimeout(r, 1000));
+async function moveToZone(
+  client: PokedRaceMCPClient,
+  token: number,
+  details: any,
+  zone: "RepairBay" | "ChargingStation"
+): Promise<boolean> {
+  const currentZone = details?.active_scavenging?.zone;
+  const isScavenging = !!details?.active_scavenging?.status?.includes("Active");
+  if (isScavenging && currentZone === zone) return true;
 
-  while (Date.now() < deadlineMs) {
-    const details = await getBotDetails(client, token);
-    latestCondition = details?.condition?.condition ?? latestCondition;
-    const zone = details?.active_scavenging?.zone;
-    const isScavenging = !!details?.active_scavenging?.status?.includes("Active");
-
-    if (latestCondition >= targetCondition) {
-      return { reached: true, latestCondition };
-    }
-
-    // Keep bot in RepairBay while waiting for passive recovery.
-    if (!(isScavenging && zone === "RepairBay")) {
-      await sendToRepairBay(client, token);
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-
-    const waitMs = Math.min(
-      REPAIR_CHECK_INTERVAL_MS,
-      Math.max(0, deadlineMs - Date.now())
-    );
-    if (waitMs > 0) {
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
+  if (isScavenging || currentZone) {
+    await recall(client, token);
+    await new Promise((r) => setTimeout(r, 300));
   }
 
-  const finalDetails = await getBotDetails(client, token);
-  latestCondition = finalDetails?.condition?.condition ?? latestCondition;
-  return { reached: latestCondition >= targetCondition, latestCondition };
+  return sendToZone(client, token, zone);
 }
 
 async function paidCharge(client: PokedRaceMCPClient, token: number) {
@@ -261,7 +270,7 @@ async function registerBot(
   client: PokedRaceMCPClient,
   eventId: number,
   token: number
-) {
+): Promise<boolean> {
   console.log(`   📝 Register #${token} for Event #${eventId}`);
   try {
     const res = await client.callTool("racing_register_for_event", {
@@ -270,11 +279,14 @@ async function registerBot(
     });
     if (res.isError) {
       console.error(`   Registration failed: ${res.content?.[0]?.text}`);
+      return false;
     } else {
       console.log(`   ✅ Registered!`);
+      return true;
     }
   } catch (e: any) {
     console.error(`   Registration error: ${e.message}`);
+    return false;
   }
 }
 
@@ -282,37 +294,62 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
   try {
     const res = await client.callTool("garage_list_batteries", {});
     const text = res.content[0].text;
-    const ids = new Set<number>();
+    let sawBatteryArray = false;
+    const usableByStored: Array<{ id: number; stored: number }> = [];
 
     // JSON parser (supports array/object/nested payloads)
     try {
       const data = JSON.parse(text);
-      const stack: unknown[] = [data];
-      while (stack.length > 0) {
-        const cur = stack.pop();
-        if (!cur || typeof cur !== "object") continue;
 
-        if (Array.isArray(cur)) {
-          for (const item of cur) stack.push(item);
-          continue;
-        }
-
-        const obj = cur as Record<string, unknown>;
-        for (const [k, v] of Object.entries(obj)) {
-          if (
-            /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
-            (typeof v === "number" || typeof v === "string")
-          ) {
-            const n = typeof v === "number" ? v : parseInt(v, 10);
-            if (Number.isInteger(n) && n > 0) ids.add(n);
+      if (Array.isArray(data?.batteries)) {
+        sawBatteryArray = true;
+        for (const b of data.batteries) {
+          const id = Number((b as any)?.id);
+          const stored = Number((b as any)?.stored_kwh ?? 0);
+          const isOperational = (b as any)?.is_operational === true;
+          if (Number.isInteger(id) && id > 0 && isOperational && stored > 0) {
+            usableByStored.push({ id, stored });
           }
-          if (v && typeof v === "object") stack.push(v);
         }
+      } else {
+        const ids = new Set<number>();
+        const stack: unknown[] = [data];
+        while (stack.length > 0) {
+          const cur = stack.pop();
+          if (!cur || typeof cur !== "object") continue;
+
+          if (Array.isArray(cur)) {
+            for (const item of cur) stack.push(item);
+            continue;
+          }
+
+          const obj = cur as Record<string, unknown>;
+          for (const [k, v] of Object.entries(obj)) {
+            if (
+              /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
+              (typeof v === "number" || typeof v === "string")
+            ) {
+              const n = typeof v === "number" ? v : parseInt(v, 10);
+              if (Number.isInteger(n) && n > 0) ids.add(n);
+            }
+            if (v && typeof v === "object") stack.push(v);
+          }
+        }
+        if (ids.size > 0) return [...ids];
       }
     } catch {}
 
+    if (usableByStored.length > 0) {
+      usableByStored.sort((a, b) => b.stored - a.stored);
+      return usableByStored.map((b) => b.id);
+    }
+    if (sawBatteryArray) {
+      return [];
+    }
+
     // Text fallback for non-JSON responses
-    if (ids.size === 0) {
+    const ids = new Set<number>();
+    {
       const patterns = [
         /"id"\s*:\s*(\d+)/g,
         /\bbattery(?:[_\s-]?id)?\s*[:#=]\s*(\d+)/gi,
@@ -388,14 +425,42 @@ async function main() {
     return;
   }
 
-  // 4. Get batteries for Jolt
+  // 4. Register first (avoid losing slots while waiting for maintenance)
+  const registeredBots: BotEntry[] = [];
+  for (const bot of selected) {
+    console.log(`\n🤖 Register phase: ${bot.name} (#${bot.token})`);
+
+    const details = await getBotDetails(client, bot.token);
+    if (!details) {
+      console.log("   Failed to get details, skipping");
+      continue;
+    }
+
+    const isScavenging = !!details.active_scavenging?.status?.includes("Active");
+    if (isScavenging) {
+      console.log(`   📥 Recalling before registration...`);
+      await recall(client, bot.token);
+      await new Promise((r) => setTimeout(r, 400));
+    }
+
+    const ok = await registerBot(client, event.id, bot.token);
+    if (ok) registeredBots.push(bot);
+  }
+
+  if (registeredBots.length === 0) {
+    console.log("\nNo bots could be registered. Exiting.");
+    await client.close();
+    return;
+  }
+
+  console.log(
+    `\n🧰 Maintenance phase for ${registeredBots.length} registered bots`
+  );
+
+  // 5. Battery items for Jolt maintenance
   let batteryIds = await getBatteries(client);
   const triedBatteryIds = new Set<number>();
-  if (batteryIds.length === 0) {
-    console.log("⚠️ No batteries found for Jolt\n");
-  } else {
-    console.log(`🔋 Parsed battery items: ${batteryIds.length}`);
-  }
+  console.log(`🔋 Parsed usable battery items: ${batteryIds.length}`);
 
   async function refillBatteryIds(): Promise<number> {
     const latest = await getBatteries(client);
@@ -409,121 +474,139 @@ async function main() {
     return added;
   }
 
-  // 5. Process each racer
-  for (const bot of selected) {
-    console.log(`\n🤖 ${bot.name} (#${bot.token})`);
+  const deadlineMs =
+    event.startTime.getTime() - REGISTRATION_BUFFER_MINUTES * 60 * 1000;
+  const prepared = new Set<number>();
 
-    const details = await getBotDetails(client, bot.token);
-    if (!details) {
-      console.log("   Failed to get details, skipping");
-      continue;
-    }
+  // 6. Maintain registered bots until deadline (RepairBay cap-aware, frequent checks)
+  while (Date.now() < deadlineMs) {
+    const remaining = registeredBots.filter((b) => !prepared.has(b.token));
+    if (remaining.length === 0) break;
 
-    const bat = details.condition?.battery ?? 0;
-    const cond = details.condition?.condition ?? 0;
-    const zone = details.active_scavenging?.zone;
-    const isScavenging = !!details.active_scavenging?.status?.includes(
-      "Active"
-    );
-
+    let progressed = false;
+    let repairBayTokens = await getGlobalRepairBayTokens(client);
     console.log(
-      `   Status: Bat=${bat}% Cond=${cond}% Zone=${zone || "Idle"}`
+      `\n🔧 RepairBay occupancy: ${repairBayTokens.size}/${MAX_REPAIR_BAY} | Remaining prep: ${remaining.length}`
     );
 
-    // a. Recall if scavenging
-    if (isScavenging) {
-      console.log(`   📥 Recalling...`);
-      await recall(client, bot.token);
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    for (const bot of remaining) {
+      const details = await getBotDetails(client, bot.token);
+      if (!details) continue;
 
-    // b. If condition is low, wait in RepairBay until threshold before paid repair.
-    if (cond < MIN_CONDITION_BEFORE_PAID_REPAIR) {
-      const deadlineMs =
-        event.startTime.getTime() - REGISTRATION_BUFFER_MINUTES * 60 * 1000;
-      console.log(
-        `   ⏳ Condition low (${cond}%), waiting for >= ${MIN_CONDITION_BEFORE_PAID_REPAIR}% in RepairBay`
-      );
+      const cond = details.condition?.condition ?? 0;
+      const zone = details.active_scavenging?.zone;
+      const isScavenging = !!details.active_scavenging?.status?.includes("Active");
 
-      const recovery = await waitForConditionRecovery(
-        client,
-        bot.token,
-        MIN_CONDITION_BEFORE_PAID_REPAIR,
-        deadlineMs
-      );
-
-      await recall(client, bot.token);
-      await new Promise((r) => setTimeout(r, 300));
-
-      if (!recovery.reached) {
-        console.log(
-          `   ❌ Condition stayed below ${MIN_CONDITION_BEFORE_PAID_REPAIR}% (latest ${recovery.latestCondition}%). Skip registration for this bot.`
-        );
-        continue;
-      }
-
-      console.log(
-        `   ✅ Condition recovered to ${recovery.latestCondition}% (>= ${MIN_CONDITION_BEFORE_PAID_REPAIR}%)`
-      );
-    }
-
-    // c. Paid Charge (→ Overcharge via recharge_robot)
-    await paidCharge(client, bot.token);
-    await new Promise((r) => setTimeout(r, 300));
-
-    // Refresh battery after paid charge
-    const afterCharge = await getBotDetails(client, bot.token);
-    let currentBattery = afterCharge?.condition?.battery ?? bat;
-
-    // d. Jolt repeatedly until battery reaches 100% (or stop conditions)
-    while (currentBattery < 100) {
-      if (batteryIds.length === 0) {
-        const added = await refillBatteryIds();
-        if (added > 0) {
-          console.log(`   🔄 Refreshed battery list (+${added})`);
-        } else {
-          break;
+      if (cond < MIN_CONDITION_BEFORE_PAID_REPAIR) {
+        if (isScavenging && zone === "RepairBay") {
+          console.log(
+            `⏳ #${bot.token}: Cond ${cond}% < ${MIN_CONDITION_BEFORE_PAID_REPAIR}% (RepairBay waiting)`
+          );
+          repairBayTokens.add(bot.token);
+          continue;
         }
-      }
 
-      const batteryId = batteryIds.shift()!;
-      triedBatteryIds.add(batteryId);
-      const joltResult = await joltBot(client, bot.token, batteryId);
-      await new Promise((r) => setTimeout(r, 300));
+        if (repairBayTokens.size < MAX_REPAIR_BAY) {
+          console.log(`🔧 #${bot.token}: Cond ${cond}% → RepairBay`);
+          const ok = await moveToZone(client, bot.token, details, "RepairBay");
+          if (ok) {
+            repairBayTokens.add(bot.token);
+            progressed = true;
+          }
+          continue;
+        }
 
-      if (!joltResult.ok) {
+        if (!(isScavenging && zone === "ChargingStation")) {
+          console.log(
+            `🔌 #${bot.token}: Cond ${cond}% / RepairBay full → ChargingStation`
+          );
+          const ok = await moveToZone(
+            client,
+            bot.token,
+            details,
+            "ChargingStation"
+          );
+          if (ok) progressed = true;
+        } else {
+          console.log(
+            `⏳ #${bot.token}: Cond ${cond}% / RepairBay full (ChargingStation waiting)`
+          );
+        }
         continue;
       }
 
-      if (typeof joltResult.newBatteryLevel === "number") {
-        currentBattery = joltResult.newBatteryLevel;
-      } else {
-        const afterJolt = await getBotDetails(client, bot.token);
-        currentBattery = afterJolt?.condition?.battery ?? currentBattery;
+      // Condition is ready: finalize race prep
+      if (isScavenging) {
+        await recall(client, bot.token);
+        await new Promise((r) => setTimeout(r, 300));
       }
 
-      if (joltResult.overheated) {
-        console.log(`   🌡️ Overheated at ${currentBattery}%, stop jolting`);
-        break;
+      await paidCharge(client, bot.token);
+      await new Promise((r) => setTimeout(r, 300));
+
+      const afterCharge = await getBotDetails(client, bot.token);
+      let currentBattery = afterCharge?.condition?.battery ?? 0;
+
+      while (currentBattery < 100) {
+        if (batteryIds.length === 0) {
+          const added = await refillBatteryIds();
+          if (added > 0) {
+            console.log(`   🔄 Refreshed battery list (+${added})`);
+          } else {
+            break;
+          }
+        }
+
+        const batteryId = batteryIds.shift()!;
+        triedBatteryIds.add(batteryId);
+        const joltResult = await joltBot(client, bot.token, batteryId);
+        await new Promise((r) => setTimeout(r, 250));
+
+        if (!joltResult.ok) continue;
+        if (typeof joltResult.newBatteryLevel === "number") {
+          currentBattery = joltResult.newBatteryLevel;
+        } else {
+          const afterJolt = await getBotDetails(client, bot.token);
+          currentBattery = afterJolt?.condition?.battery ?? currentBattery;
+        }
+        if (joltResult.overheated) break;
       }
+
+      await paidRepair(client, bot.token);
+      await new Promise((r) => setTimeout(r, 300));
+
+      prepared.add(bot.token);
+      progressed = true;
+      repairBayTokens.delete(bot.token);
+      console.log(
+        `✅ #${bot.token}: prepared (Cond>=${MIN_CONDITION_BEFORE_PAID_REPAIR}, Battery=${currentBattery}%)`
+      );
     }
 
-    if (currentBattery < 100) {
-      if (batteryIds.length === 0) {
-        console.log(`   🔋 Battery item exhausted at ${currentBattery}%`);
-      } else {
-        console.log(`   ⚠️ Jolt ended at ${currentBattery}%`);
+    if (Date.now() >= deadlineMs) break;
+
+    const stillRemaining = registeredBots.filter((b) => !prepared.has(b.token));
+    if (stillRemaining.length === 0) break;
+
+    if (!progressed) {
+      const waitMs = Math.min(
+        REPAIR_CHECK_INTERVAL_MS,
+        Math.max(0, deadlineMs - Date.now())
+      );
+      if (waitMs > 0) {
+        console.log(`⏳ No progress this pass. Wait ${Math.floor(waitMs / 60000)}m`);
+        await new Promise((r) => setTimeout(r, waitMs));
       }
-    } else {
-      console.log(`   ✅ Battery reached 100%`);
     }
+  }
 
-    // e. Paid Repair (→ Perfect Tune)
-    await paidRepair(client, bot.token);
-    await new Promise((r) => setTimeout(r, 300));
-
-    // f. Register
-    await registerBot(client, event.id, bot.token);
+  const unprepared = registeredBots.filter((b) => !prepared.has(b.token));
+  if (unprepared.length > 0) {
+    console.log(
+      `\n⚠️ Unprepared before deadline (${unprepared.length}): ${unprepared
+        .map((b) => `${b.name}(${b.token})`)
+        .join(", ")}`
+    );
   }
 
   console.log("\n✅ Race prep complete");

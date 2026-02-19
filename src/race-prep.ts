@@ -585,6 +585,27 @@ async function main() {
         if (joltResult.overheated) break;
       }
 
+      const beforeFinalize = await getBotDetails(client, bot.token);
+      currentBattery = beforeFinalize?.condition?.battery ?? currentBattery;
+      if (currentBattery < 100) {
+        console.log(
+          `⚠️ #${bot.token}: battery ${currentBattery}% < 100, keep in ChargingStation and retry later`
+        );
+        if (
+          !beforeFinalize?.active_scavenging?.status?.includes("Active") ||
+          beforeFinalize?.active_scavenging?.zone !== "ChargingStation"
+        ) {
+          const ok = await moveToZone(
+            client,
+            bot.token,
+            beforeFinalize ?? details,
+            "ChargingStation"
+          );
+          if (ok) progressed = true;
+        }
+        continue;
+      }
+
       await paidRepair(client, bot.token);
       await new Promise((r) => setTimeout(r, 300));
 

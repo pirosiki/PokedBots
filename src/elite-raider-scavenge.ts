@@ -8,7 +8,7 @@
  *   2) If recalled and condition < 30 -> RepairBay
  *   3) If condition >= 30 -> ChargingStation
  *   4) When battery >= 95 -> redeploy to target scavenging zone
- * - Skip bots that are currently registered for races.
+ * - During Daily Sprint prep window (T-2h), skip this batch entirely.
  *
  * Usage:
  *   npm run elite-raider-scavenge
@@ -60,6 +60,8 @@ const REDEPLOY_BATTERY_THRESHOLD =
 const MAX_REPAIR_BAY = 5;
 const CHARGING_ZONE = "ChargingStation";
 const REPAIR_ZONE = "RepairBay";
+const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
+const PREP_WINDOW_MINUTES = 120;
 
 function parseTier(text: string): Tier {
   if (/\bElite\b/.test(text)) return "Elite";
@@ -117,49 +119,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function getRegisteredBots(
-  client: PokedRaceMCPClient,
-  tokens: number[]
-): Promise<Set<number>> {
-  async function hasUpcomingRace(token: number): Promise<boolean> {
-    try {
-      const result = await client.callTool("racing_get_bot_races", {
-        token_index: token,
-        category: "upcoming",
-      });
-      const text = result?.content?.[0]?.text || "";
+function getMinutesUntilNextDailySprint(now: Date = new Date()): number {
+  let minMs = Number.POSITIVE_INFINITY;
 
-      try {
-        const data = JSON.parse(text);
-        if (typeof data?.total_in_category === "number") {
-          return data.total_in_category > 0;
-        }
-        if (typeof data?.total_upcoming === "number") {
-          return data.total_upcoming > 0;
-        }
-        if (Array.isArray(data?.races)) {
-          return data.races.length > 0;
-        }
-      } catch {}
-
-      if (/"total_(?:in_category|upcoming)"\s*:\s*[1-9]/.test(text))
-        return true;
-      if (/"races"\s*:\s*\[(?!\s*\])/.test(text)) return true;
-      return false;
-    } catch {
-      return false;
+  for (const hour of DAILY_SPRINT_UTC_HOURS) {
+    const candidate = new Date(now);
+    candidate.setUTCHours(hour, 0, 0, 0);
+    if (candidate.getTime() < now.getTime()) {
+      candidate.setUTCDate(candidate.getUTCDate() + 1);
     }
+    const delta = candidate.getTime() - now.getTime();
+    if (delta < minMs) minMs = delta;
   }
 
-  const checks = await Promise.all(
-    tokens.map(async (token) => ({
-      token,
-      upcoming: await hasUpcomingRace(token),
-    }))
-  );
-  return new Set<number>(
-    checks.filter((c) => c.upcoming).map((c) => c.token)
-  );
+  return Math.floor(minMs / 60000);
+}
+
+function isInPrepWindow(now: Date = new Date()): boolean {
+  return getMinutesUntilNextDailySprint(now) <= PREP_WINDOW_MINUTES;
 }
 
 async function getOwnedBots(client: PokedRaceMCPClient): Promise<ListedBot[]> {
@@ -339,14 +316,17 @@ async function main() {
   console.log(`Dry run: ${DRY_RUN ? "ON" : "OFF"}`);
   console.log(`Keep (Elite+Raider roster): ${[...keepTokens].join(", ")}\n`);
 
+  const minutesToRace = getMinutesUntilNextDailySprint();
+  if (isInPrepWindow()) {
+    console.log(
+      `⏱️ Next daily sprint in ${minutesToRace}m (T-${PREP_WINDOW_MINUTES}m window) -> skip this batch`
+    );
+    await client.close();
+    return;
+  }
+
   const owned = await getOwnedBots(client);
-  const candidateTokens = owned
-    .filter((b) => b.tier === "Elite" || b.tier === "Raider")
-    .map((b) => b.token);
-  const [registered, repairBayInit] = await Promise.all([
-    getRegisteredBots(client, candidateTokens),
-    getRepairBayTokens(client),
-  ]);
+  const repairBayInit = await getRepairBayTokens(client);
   let repairBayTokens = repairBayInit;
 
   const targets = owned.filter(
@@ -356,27 +336,16 @@ async function main() {
   console.log(`Owned bots: ${owned.length}`);
   console.log(`Target Elite/Raider (excluding keep): ${targets.length}`);
   console.log(`RepairBay occupancy: ${repairBayTokens.size}/${MAX_REPAIR_BAY}`);
-  console.log(
-    `Registered (skip): ${
-      registered.size > 0 ? [...registered].join(", ") : "none"
-    }\n`
-  );
+  console.log(`⏱️ Next daily sprint in ${minutesToRace}m (normal window)\n`);
 
   let moved = 0;
   let keepScavenging = 0;
-  let skippedRegistered = 0;
   let maintenanceMove = 0;
   let lowBatteryRecall = 0;
   let fallbackMove = 0;
   let failed = 0;
 
   for (const t of targets) {
-    if (registered.has(t.token)) {
-      console.log(`#${t.token}: registered -> skip`);
-      skippedRegistered++;
-      continue;
-    }
-
     const details = await getBotDetails(client, t.token);
     const name = details?.name ? `${details.name}` : `#${t.token}`;
     let zone = getZone(details);
@@ -466,7 +435,6 @@ async function main() {
   console.log(`Low-battery recalls (<80): ${lowBatteryRecall}`);
   console.log(`Moved to maintenance zones (Repair/Charge): ${maintenanceMove}`);
   console.log(`Moved by fallback recovery: ${fallbackMove}`);
-  console.log(`Skipped (registered): ${skippedRegistered}`);
   console.log(`Failed: ${failed}`);
 
   await client.close();

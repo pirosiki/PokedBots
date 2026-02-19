@@ -27,6 +27,8 @@ const REDEPLOY_BATTERY_TARGET = 80;
 const REDEPLOY_CONDITION_TARGET = 40;
 const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
 const MAX_REPAIR_BAY = 5;
+const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
+const PREP_WINDOW_MINUTES = 120;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 
 interface BotStatus {
@@ -87,51 +89,78 @@ async function getBotStatus(
   }
 }
 
-async function hasUpcomingRace(
-  client: PokedRaceMCPClient,
-  token: number
-): Promise<boolean> {
-  try {
-    const result = await client.callTool("racing_get_bot_races", {
-      token_index: token,
-      category: "upcoming",
-    });
-    const text = result?.content?.[0]?.text || "";
+function getMinutesUntilNextDailySprint(now: Date = new Date()): number {
+  let minMs = Number.POSITIVE_INFINITY;
 
-    try {
-      const data = JSON.parse(text);
-      if (typeof data?.total_in_category === "number") {
-        return data.total_in_category > 0;
-      }
-      if (typeof data?.total_upcoming === "number") {
-        return data.total_upcoming > 0;
-      }
-      if (Array.isArray(data?.races)) {
-        return data.races.length > 0;
-      }
-    } catch {}
-
-    if (/"total_(?:in_category|upcoming)"\s*:\s*[1-9]/.test(text)) return true;
-    if (/"races"\s*:\s*\[(?!\s*\])/.test(text)) return true;
-    return false;
-  } catch {
-    return false;
+  for (const hour of DAILY_SPRINT_UTC_HOURS) {
+    const candidate = new Date(now);
+    candidate.setUTCHours(hour, 0, 0, 0);
+    if (candidate.getTime() < now.getTime()) {
+      candidate.setUTCDate(candidate.getUTCDate() + 1);
+    }
+    const delta = candidate.getTime() - now.getTime();
+    if (delta < minMs) minMs = delta;
   }
+
+  return Math.floor(minMs / 60000);
 }
 
-async function getRegisteredBots(
+function isInPrepWindow(now: Date = new Date()): boolean {
+  return getMinutesUntilNextDailySprint(now) <= PREP_WINDOW_MINUTES;
+}
+
+function parseRegisteredFromPayload(
+  payload: string,
+  candidateSet: Set<number>
+): Set<number> {
+  const tokens = new Set<number>();
+
+  try {
+    const data = JSON.parse(payload);
+    const stack: unknown[] = [data];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+      if (Array.isArray(cur)) {
+        for (const item of cur) stack.push(item);
+        continue;
+      }
+      const obj = cur as Record<string, unknown>;
+      for (const [k, v] of Object.entries(obj)) {
+        if (
+          /^(token|token_index|tokenIndex|bot_token|botToken)$/i.test(k) &&
+          (typeof v === "number" || typeof v === "string")
+        ) {
+          const n = typeof v === "number" ? v : parseInt(v, 10);
+          if (Number.isInteger(n) && candidateSet.has(n)) tokens.add(n);
+        }
+        if (typeof v === "number" && candidateSet.has(v)) {
+          tokens.add(v);
+        }
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
+  } catch {}
+
+  for (const m of payload.matchAll(/\b\d+\b/g)) {
+    const n = parseInt(m[0], 10);
+    if (candidateSet.has(n)) tokens.add(n);
+  }
+
+  return tokens;
+}
+
+async function getRegisteredBotsOnce(
   client: PokedRaceMCPClient,
   tokens: number[]
 ): Promise<Set<number>> {
-  const checks = await Promise.all(
-    tokens.map(async (token) => ({
-      token,
-      upcoming: await hasUpcomingRace(client, token),
-    }))
-  );
-  return new Set<number>(
-    checks.filter((c) => c.upcoming).map((c) => c.token)
-  );
+  try {
+    const res = await client.callTool("racing_get_my_registrations", {});
+    const text = res?.content?.[0]?.text || "";
+    return parseRegisteredFromPayload(text, new Set<number>(tokens));
+  } catch {
+    return new Set<number>();
+  }
 }
 
 async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
@@ -300,8 +329,15 @@ async function main() {
     await Promise.all(ALL_TOKENS.map((t) => getBotStatus(client, t)))
   ).filter((s): s is BotStatus => s !== null);
 
-  // 2. Get registered bots
-  const registered = await getRegisteredBots(client, ALL_TOKENS);
+  // 2. Get registered bots only in T-2h prep window
+  const minutesToRace = getMinutesUntilNextDailySprint();
+  const inPrepWindow = isInPrepWindow();
+  const registered = inPrepWindow
+    ? await getRegisteredBotsOnce(client, ALL_TOKENS)
+    : new Set<number>();
+  console.log(
+    `⏱️ Next daily sprint in ${minutesToRace}m (prep-window=${inPrepWindow ? "ON" : "OFF"})`
+  );
   console.log(
     `🏁 Registered: ${registered.size > 0 ? [...registered].join(", ") : "none"}\n`
   );

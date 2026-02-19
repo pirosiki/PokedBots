@@ -577,28 +577,12 @@ async function main() {
       if (currentBattery < 100) {
         const chargeResult = await paidCharge(client, bot.token);
         if (!chargeResult.ok) {
-          // Charge can fail (e.g., cooldown/funds). If battery is still not full,
-          // keep this bot in ChargingStation and retry in next pass.
+          // Charge can fail (e.g., cooldown/funds). Fall back to Jolt path below.
           chargeDetails = await getBotDetails(client, bot.token);
           currentBattery = chargeDetails?.condition?.battery ?? currentBattery;
-          if (currentBattery < 100) {
-            console.log(
-              `⚠️ #${bot.token}: paid charge failed and battery ${currentBattery}% < 100, retry later`
-            );
-            if (
-              !chargeDetails?.active_scavenging?.status?.includes("Active") ||
-              chargeDetails?.active_scavenging?.zone !== "ChargingStation"
-            ) {
-              const ok = await moveToZone(
-                client,
-                bot.token,
-                chargeDetails ?? details,
-                "ChargingStation"
-              );
-              if (ok) progressed = true;
-            }
-            continue;
-          }
+          console.log(
+            `⚠️ #${bot.token}: paid charge failed (battery ${currentBattery}%), fallback to Jolt`
+          );
         } else {
           await new Promise((r) => setTimeout(r, 300));
           chargeDetails = await getBotDetails(client, bot.token);

@@ -571,28 +571,42 @@ async function main() {
         await new Promise((r) => setTimeout(r, 300));
       }
 
-      const chargeResult = await paidCharge(client, bot.token);
-      if (!chargeResult.ok) {
-        console.log(`⚠️ #${bot.token}: paid charge failed, retry later`);
-        const chargeDetails = await getBotDetails(client, bot.token);
-        if (
-          !chargeDetails?.active_scavenging?.status?.includes("Active") ||
-          chargeDetails?.active_scavenging?.zone !== "ChargingStation"
-        ) {
-          const ok = await moveToZone(
-            client,
-            bot.token,
-            chargeDetails ?? details,
-            "ChargingStation"
-          );
-          if (ok) progressed = true;
-        }
-        continue;
-      }
-      await new Promise((r) => setTimeout(r, 300));
+      let chargeDetails = await getBotDetails(client, bot.token);
+      let currentBattery = chargeDetails?.condition?.battery ?? 0;
 
-      const afterCharge = await getBotDetails(client, bot.token);
-      let currentBattery = afterCharge?.condition?.battery ?? 0;
+      if (currentBattery < 100) {
+        const chargeResult = await paidCharge(client, bot.token);
+        if (!chargeResult.ok) {
+          // Charge can fail (e.g., cooldown/funds). If battery is still not full,
+          // keep this bot in ChargingStation and retry in next pass.
+          chargeDetails = await getBotDetails(client, bot.token);
+          currentBattery = chargeDetails?.condition?.battery ?? currentBattery;
+          if (currentBattery < 100) {
+            console.log(
+              `⚠️ #${bot.token}: paid charge failed and battery ${currentBattery}% < 100, retry later`
+            );
+            if (
+              !chargeDetails?.active_scavenging?.status?.includes("Active") ||
+              chargeDetails?.active_scavenging?.zone !== "ChargingStation"
+            ) {
+              const ok = await moveToZone(
+                client,
+                bot.token,
+                chargeDetails ?? details,
+                "ChargingStation"
+              );
+              if (ok) progressed = true;
+            }
+            continue;
+          }
+        } else {
+          await new Promise((r) => setTimeout(r, 300));
+          chargeDetails = await getBotDetails(client, bot.token);
+          currentBattery = chargeDetails?.condition?.battery ?? currentBattery;
+        }
+      } else {
+        console.log(`   ⏭️ #${bot.token}: battery already 100%, skip paid charge`);
+      }
 
       let joltAttempts = 0;
       while (currentBattery < 100 && joltAttempts < MAX_JOLT_PER_BOT) {

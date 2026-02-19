@@ -25,7 +25,7 @@ const SCAVENGE_MIN_BATTERY = 20;
 const SCAVENGE_MIN_CONDITION = 25;
 const REDEPLOY_BATTERY_TARGET = 80;
 const REDEPLOY_CONDITION_TARGET = 40;
-const MAX_JOLT_PER_BOT = 6;
+const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
 const MAX_REPAIR_BAY = 5;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 

@@ -43,9 +43,10 @@ const PER_TERRAIN_LIMITS: Record<
   Scrap: { ScrapHeaps: 2 },
 };
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
-const REPAIR_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const REPAIR_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const REGISTRATION_BUFFER_MINUTES = 15;
 const MAX_REPAIR_BAY = 5;
+const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
 
 function predictTerrains(raceTimeUTC: Date): string[] {
   const totalSec = Math.floor(raceTimeUTC.getTime() / 1000);
@@ -547,7 +548,8 @@ async function main() {
       const afterCharge = await getBotDetails(client, bot.token);
       let currentBattery = afterCharge?.condition?.battery ?? 0;
 
-      while (currentBattery < 100) {
+      let joltAttempts = 0;
+      while (currentBattery < 100 && joltAttempts < MAX_JOLT_PER_BOT) {
         if (batteryIds.length === 0) {
           const added = await refillBatteryIds();
           if (added > 0) {
@@ -560,6 +562,7 @@ async function main() {
         const batteryId = batteryIds.shift()!;
         triedBatteryIds.add(batteryId);
         const joltResult = await joltBot(client, bot.token, batteryId);
+        joltAttempts++;
         await new Promise((r) => setTimeout(r, 250));
 
         if (!joltResult.ok) continue;

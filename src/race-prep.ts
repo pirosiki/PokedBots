@@ -43,6 +43,8 @@ const PER_TERRAIN_LIMITS: Record<
   Scrap: { ScrapHeaps: 2 },
 };
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
+const EVENT_MIN_MINUTES = 0;
+const EVENT_MAX_MINUTES = 180;
 const REPAIR_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const FINAL_PHASE_INTERVAL_MS = 2 * 60 * 1000;
 const FINAL_PHASE_WINDOW_MINUTES = 30;
@@ -97,7 +99,7 @@ async function getUpcomingEvents(
       const startTime = new Date(startMatch[1]);
       const minUntil = (startTime.getTime() - now.getTime()) / 60000;
 
-      if (minUntil > 10 && minUntil < 180) {
+      if (minUntil > EVENT_MIN_MINUTES && minUntil < EVENT_MAX_MINUTES) {
         const raceIds = raceMatch
           ? raceMatch[1].split(",").map((s: string) => parseInt(s.trim()))
           : [];
@@ -410,7 +412,9 @@ async function main() {
   // 1. Find upcoming events
   const events = await getUpcomingEvents(client);
   if (events.length === 0) {
-    console.log("No events in target window (10-180m). Exiting.");
+    console.log(
+      `No events in target window (${EVENT_MIN_MINUTES}-${EVENT_MAX_MINUTES}m). Exiting.`
+    );
     await client.close();
     return;
   }

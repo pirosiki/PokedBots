@@ -208,12 +208,24 @@ async function moveToZone(
   return sendToZone(client, token, zone);
 }
 
-async function paidCharge(client: PokedRaceMCPClient, token: number) {
+async function paidCharge(
+  client: PokedRaceMCPClient,
+  token: number
+): Promise<{ ok: boolean; error?: string }> {
   console.log(`   💰 Charge #${token}`);
   try {
-    await client.callTool("garage_recharge_robot", { token_index: token });
+    const res = await client.callTool("garage_recharge_robot", {
+      token_index: token,
+    });
+    if (res?.isError) {
+      const err = res?.content?.[0]?.text || "unknown recharge error";
+      console.error(`   Charge failed: ${err}`);
+      return { ok: false, error: err };
+    }
+    return { ok: true };
   } catch (e: any) {
     console.error(`   Charge failed: ${e.message}`);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -260,12 +272,24 @@ async function joltBot(
   }
 }
 
-async function paidRepair(client: PokedRaceMCPClient, token: number) {
+async function paidRepair(
+  client: PokedRaceMCPClient,
+  token: number
+): Promise<{ ok: boolean; error?: string }> {
   console.log(`   💰 Repair #${token} (Perfect Tune)`);
   try {
-    await client.callTool("garage_repair_robot", { token_index: token });
+    const res = await client.callTool("garage_repair_robot", {
+      token_index: token,
+    });
+    if (res?.isError) {
+      const err = res?.content?.[0]?.text || "unknown repair error";
+      console.error(`   Repair failed: ${err}`);
+      return { ok: false, error: err };
+    }
+    return { ok: true };
   } catch (e: any) {
     console.error(`   Repair failed: ${e.message}`);
+    return { ok: false, error: e.message };
   }
 }
 
@@ -543,7 +567,24 @@ async function main() {
         await new Promise((r) => setTimeout(r, 300));
       }
 
-      await paidCharge(client, bot.token);
+      const chargeResult = await paidCharge(client, bot.token);
+      if (!chargeResult.ok) {
+        console.log(`⚠️ #${bot.token}: paid charge failed, retry later`);
+        const chargeDetails = await getBotDetails(client, bot.token);
+        if (
+          !chargeDetails?.active_scavenging?.status?.includes("Active") ||
+          chargeDetails?.active_scavenging?.zone !== "ChargingStation"
+        ) {
+          const ok = await moveToZone(
+            client,
+            bot.token,
+            chargeDetails ?? details,
+            "ChargingStation"
+          );
+          if (ok) progressed = true;
+        }
+        continue;
+      }
       await new Promise((r) => setTimeout(r, 300));
 
       const afterCharge = await getBotDetails(client, bot.token);
@@ -606,7 +647,11 @@ async function main() {
         continue;
       }
 
-      await paidRepair(client, bot.token);
+      const repairResult = await paidRepair(client, bot.token);
+      if (!repairResult.ok) {
+        console.log(`⚠️ #${bot.token}: paid repair failed, retry later`);
+        continue;
+      }
       await new Promise((r) => setTimeout(r, 300));
 
       prepared.add(bot.token);

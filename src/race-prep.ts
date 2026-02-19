@@ -44,6 +44,8 @@ const PER_TERRAIN_LIMITS: Record<
 };
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
 const REPAIR_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const FINAL_PHASE_INTERVAL_MS = 2 * 60 * 1000;
+const FINAL_PHASE_WINDOW_MINUTES = 30;
 const REGISTRATION_BUFFER_MINUTES = 15;
 const MAX_REPAIR_BAY = 5;
 const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
@@ -460,14 +462,13 @@ async function main() {
 
   // 5. Battery items for Jolt maintenance
   let batteryIds = await getBatteries(client);
-  const triedBatteryIds = new Set<number>();
   console.log(`🔋 Parsed usable battery items: ${batteryIds.length}`);
 
   async function refillBatteryIds(): Promise<number> {
     const latest = await getBatteries(client);
     let added = 0;
     for (const id of latest) {
-      if (!triedBatteryIds.has(id) && !batteryIds.includes(id)) {
+      if (!batteryIds.includes(id)) {
         batteryIds.push(id);
         added++;
       }
@@ -560,12 +561,21 @@ async function main() {
         }
 
         const batteryId = batteryIds.shift()!;
-        triedBatteryIds.add(batteryId);
         const joltResult = await joltBot(client, bot.token, batteryId);
         joltAttempts++;
         await new Promise((r) => setTimeout(r, 250));
 
-        if (!joltResult.ok) continue;
+        if (!joltResult.ok) {
+          const err = (joltResult.error || "").toLowerCase();
+          if (
+            err.includes("overheat") ||
+            err.includes("overheated") ||
+            err.includes("cooldown")
+          ) {
+            break;
+          }
+          continue;
+        }
         if (typeof joltResult.newBatteryLevel === "number") {
           currentBattery = joltResult.newBatteryLevel;
         } else {
@@ -592,9 +602,14 @@ async function main() {
     if (stillRemaining.length === 0) break;
 
     if (!progressed) {
+      const remainingMs = Math.max(0, deadlineMs - Date.now());
+      const intervalMs =
+        remainingMs <= FINAL_PHASE_WINDOW_MINUTES * 60 * 1000
+          ? FINAL_PHASE_INTERVAL_MS
+          : REPAIR_CHECK_INTERVAL_MS;
       const waitMs = Math.min(
-        REPAIR_CHECK_INTERVAL_MS,
-        Math.max(0, deadlineMs - Date.now())
+        intervalMs,
+        remainingMs
       );
       if (waitMs > 0) {
         console.log(`⏳ No progress this pass. Wait ${Math.floor(waitMs / 60000)}m`);

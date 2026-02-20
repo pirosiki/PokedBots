@@ -32,16 +32,8 @@ const TERRAIN_ORDER: BotEntry["terrain"][] = [
   "WastelandSand",
   "ScrapHeaps",
 ];
-const BASE_PER_TERRAIN_LIMIT = 1;
-const PER_TERRAIN_LIMITS: Record<
-  string,
-  Partial<Record<BotEntry["terrain"], number>>
-> = {
-  Elite: { MetalRoads: 2, ScrapHeaps: 2 },
-  Raider: { MetalRoads: 2 },
-  Junker: { MetalRoads: 2 },
-  Scrap: { ScrapHeaps: 2 },
-};
+const TERRAINS_PER_EVENT = 2;
+const BOTS_PER_TIER_PER_TERRAIN = 1;
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
 const EVENT_MIN_MINUTES = 0;
 const EVENT_MAX_MINUTES = 180;
@@ -433,16 +425,48 @@ async function main() {
     console.log(`🌍 Terrains: ${terrains.join(", ")}`);
   }
 
-  // 3. Select racers (per Tier × per terrain limit)
+  // 3. Select racers (fixed: each tier × each event terrain = 1 bot)
   const selected: BotEntry[] = [];
-  const activeTerrains = terrains.filter(isRosterTerrain);
+  const activeTerrains = Array.from(new Set(terrains.filter(isRosterTerrain)));
+  const eventTerrains = activeTerrains.slice(0, TERRAINS_PER_EVENT);
+  const selectedTokens = new Set<number>();
+
+  if (eventTerrains.length < TERRAINS_PER_EVENT) {
+    const fallbackTerrains = predictTerrains(event.startTime).filter(isRosterTerrain);
+    for (const t of fallbackTerrains) {
+      if (!eventTerrains.includes(t)) eventTerrains.push(t);
+      if (eventTerrains.length >= TERRAINS_PER_EVENT) break;
+    }
+  }
+
   for (const tier of TIER_ORDER) {
     const tierRoster = ROSTER[tier] || [];
-    for (const terrain of activeTerrains) {
-      const perTerrainLimit =
-        PER_TERRAIN_LIMITS[tier]?.[terrain] ?? BASE_PER_TERRAIN_LIMIT;
-      const candidates = tierRoster.filter((b) => b.terrain === terrain);
-      selected.push(...candidates.slice(0, perTerrainLimit));
+    for (const terrain of eventTerrains) {
+      let picked = 0;
+
+      // Primary: exact tier+terrain match.
+      const primary = tierRoster.find(
+        (b) => b.terrain === terrain && !selectedTokens.has(b.token)
+      );
+      if (primary) {
+        selected.push(primary);
+        selectedTokens.add(primary.token);
+        picked++;
+      }
+
+      // Fallback: keep slot count fixed when exact terrain slot is missing.
+      while (picked < BOTS_PER_TIER_PER_TERRAIN) {
+        const fallback = tierRoster.find((b) => !selectedTokens.has(b.token));
+        if (!fallback) {
+          console.log(
+            `⚠️ Missing roster slot: ${tier} / ${terrain} (could not fill fixed slot)`
+          );
+          break;
+        }
+        selected.push(fallback);
+        selectedTokens.add(fallback.token);
+        picked++;
+      }
     }
   }
 

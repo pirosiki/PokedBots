@@ -4,7 +4,7 @@
  * ロースター対象の日常管理:
  *   - レース登録済みはスキップ
  *   - 未登録はできるだけ ScrapHeaps 継続
- *   - Bat < 20 の場合は Jolt で回復を補助（最大4回）
+ *   - Joltは実行しない（post-race-joltでのみ実行）
  *   - Cond < 25 は RepairBay 優先
  *   - Bat >= 80 かつ Cond >= 40 で ScrapHeaps へ復帰
  *   - レース登録済み → スキップ
@@ -25,27 +25,10 @@ const SCAVENGE_MIN_BATTERY = 20;
 const SCAVENGE_MIN_CONDITION = 25;
 const REDEPLOY_BATTERY_TARGET = 80;
 const REDEPLOY_CONDITION_TARGET = 40;
-const JOLT_TRIGGER_BATTERY = SCAVENGE_MIN_BATTERY;
-const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
 const MAX_REPAIR_BAY = 5;
 const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
 const PREP_WINDOW_MINUTES = 120;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
-const DEFAULT_JOLT_BATTERY_IDS = [
-  47, 19, 105, 53, 104, 78, 122, 124, 123, 127, 129, 131,
-];
-const JOLT_MIN_STORED_KWH = Number(process.env.JOLT_MIN_STORED_KWH ?? "0");
-const JOLT_REQUIRE_OPERATIONAL = process.env.JOLT_REQUIRE_OPERATIONAL === "1";
-const JOLT_FIXED_BATTERY_IDS = (() => {
-  const raw = (process.env.JOLT_FIXED_BATTERY_IDS || "").trim();
-  if (!raw) return DEFAULT_JOLT_BATTERY_IDS;
-  const seen = new Set<number>();
-  const parsed = raw
-    .split(/[,\s]+/)
-    .map((v) => parseInt(v, 10))
-    .filter((v) => Number.isInteger(v) && v > 0 && !seen.has(v) && seen.add(v));
-  return parsed.length > 0 ? parsed : DEFAULT_JOLT_BATTERY_IDS;
-})();
 
 interface BotStatus {
   token: number;
@@ -179,133 +162,6 @@ async function getRegisteredBotsOnce(
   }
 }
 
-async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
-  try {
-    const res = await client.callTool("garage_list_batteries", {});
-    const text = res?.content?.[0]?.text || "";
-    const preferredSet = new Set<number>(JOLT_FIXED_BATTERY_IDS);
-    let sawBatteryArray = false;
-
-    try {
-      const data = JSON.parse(text);
-
-      if (Array.isArray(data?.batteries)) {
-        sawBatteryArray = true;
-        const byId = new Map<number, { stored: number; isOperational: boolean }>();
-        for (const b of data.batteries) {
-          const id = Number((b as any)?.id);
-          const stored = Number((b as any)?.stored_kwh ?? 0);
-          const isOperational = (b as any)?.is_operational === true;
-          if (Number.isInteger(id) && id > 0) {
-            byId.set(id, { stored, isOperational });
-          }
-        }
-
-        const ranked: Array<{ id: number; stored: number }> = [];
-        for (const id of JOLT_FIXED_BATTERY_IDS) {
-          const info = byId.get(id);
-          if (!info) continue;
-          if (info.stored <= JOLT_MIN_STORED_KWH) continue;
-          if (JOLT_REQUIRE_OPERATIONAL && !info.isOperational) continue;
-          ranked.push({ id, stored: info.stored });
-        }
-
-        if (ranked.length > 0) {
-          ranked.sort((a, b) => b.stored - a.stored);
-          return ranked.map((b) => b.id);
-        }
-
-        const presentPreferred = JOLT_FIXED_BATTERY_IDS.filter((id) =>
-          byId.has(id)
-        );
-        if (presentPreferred.length > 0) {
-          return presentPreferred;
-        }
-      } else {
-        const ids = new Set<number>();
-        const stack: unknown[] = [data];
-        while (stack.length > 0) {
-          const cur = stack.pop();
-          if (!cur || typeof cur !== "object") continue;
-          if (Array.isArray(cur)) {
-            for (const item of cur) stack.push(item);
-            continue;
-          }
-          const obj = cur as Record<string, unknown>;
-          for (const [k, v] of Object.entries(obj)) {
-            if (
-              /^(id|battery[_-]?id|item[_-]?id)$/i.test(k) &&
-              (typeof v === "number" || typeof v === "string")
-            ) {
-              const n = typeof v === "number" ? v : parseInt(v, 10);
-              if (Number.isInteger(n) && n > 0 && preferredSet.has(n)) ids.add(n);
-            }
-            if (v && typeof v === "object") stack.push(v);
-          }
-        }
-        if (ids.size > 0) {
-          return JOLT_FIXED_BATTERY_IDS.filter((id) => ids.has(id));
-        }
-      }
-    } catch {}
-
-    if (sawBatteryArray) {
-      // Parsed structured battery list and found none operational/usable.
-      return [];
-    }
-
-    const ids = new Set<number>();
-    if (ids.size === 0) {
-      for (const m of text.matchAll(/#(\d+)/g)) {
-        const n = parseInt(m[1], 10);
-        if (Number.isInteger(n) && n > 0 && preferredSet.has(n)) ids.add(n);
-      }
-    }
-
-    if (ids.size > 0) {
-      return JOLT_FIXED_BATTERY_IDS.filter((id) => ids.has(id));
-    }
-    return [...JOLT_FIXED_BATTERY_IDS];
-  } catch {
-    return [...JOLT_FIXED_BATTERY_IDS];
-  }
-}
-
-async function joltBot(
-  client: PokedRaceMCPClient,
-  token: number,
-  batteryId: number
-): Promise<{
-  ok: boolean;
-  newBatteryLevel?: number;
-  overheated?: boolean;
-}> {
-  try {
-    const res = await client.callTool("garage_jolt_bot", {
-      token_index: token,
-      battery_id: batteryId,
-    });
-    if (res?.isError) return { ok: false };
-
-    const text = res?.content?.[0]?.text;
-    let newBatteryLevel: number | undefined;
-    let overheated = false;
-    if (typeof text === "string") {
-      try {
-        const data = JSON.parse(text);
-        if (typeof data?.bot?.new_battery_level === "number") {
-          newBatteryLevel = data.bot.new_battery_level;
-        }
-        overheated = !!data?.bot?.is_overheated;
-      } catch {}
-    }
-
-    return { ok: true, newBatteryLevel, overheated };
-  } catch {
-    return { ok: false };
-  }
-}
-
 async function recall(
   client: PokedRaceMCPClient,
   token: number
@@ -382,26 +238,6 @@ async function main() {
   let globalRepairBayTokens = await getGlobalRepairBayTokens(client);
   console.log(`🔧 RepairBay occupancy: ${globalRepairBayTokens.size}/${MAX_REPAIR_BAY}\n`);
 
-  // 4. Battery items for Jolt assist
-  let batteryIds = await getBatteries(client);
-  const triedBatteryIds = new Set<number>();
-  console.log(`🔋 Jolt batteries parsed: ${batteryIds.length}\n`);
-  if (batteryIds.length > 0) {
-    console.log(`🔋 Jolt order: ${batteryIds.join(", ")}\n`);
-  }
-
-  const refillBatteryIds = async (): Promise<number> => {
-    const latest = await getBatteries(client);
-    let added = 0;
-    for (const id of latest) {
-      if (!triedBatteryIds.has(id) && !batteryIds.includes(id)) {
-        batteryIds.push(id);
-        added++;
-      }
-    }
-    return added;
-  };
-
   for (const bot of statuses) {
     let battery = bot.battery;
     let condition = bot.condition;
@@ -431,40 +267,7 @@ async function main() {
       }
     }
 
-    // --- Case 2: critical low battery gets Jolt assist first ---
-    if (battery < JOLT_TRIGGER_BATTERY) {
-      let joltAttempts = 0;
-      while (battery < REDEPLOY_BATTERY_TARGET && joltAttempts < MAX_JOLT_PER_BOT) {
-        if (batteryIds.length === 0) {
-          const added = await refillBatteryIds();
-          if (added === 0) break;
-          console.log(`⚡ ${tag()}: battery list refreshed (+${added})`);
-        }
-        const batteryId = batteryIds.shift()!;
-        triedBatteryIds.add(batteryId);
-        const j = await joltBot(client, bot.token, batteryId);
-        joltAttempts++;
-
-        if (!j.ok) continue;
-        if (typeof j.newBatteryLevel === "number") {
-          battery = j.newBatteryLevel;
-        } else {
-          const refreshed = await getBotStatus(client, bot.token);
-          if (refreshed) battery = refreshed.battery;
-        }
-        if (j.overheated) break;
-      }
-
-      const refreshed = await getBotStatus(client, bot.token);
-      if (refreshed) {
-        battery = refreshed.battery;
-        condition = refreshed.condition;
-        zone = refreshed.zone || "Idle";
-        isScavenging = refreshed.isScavenging;
-      }
-    }
-
-    // --- Case 3: condition recovery first ---
+    // --- Case 2: condition recovery first ---
     if (condition < SCAVENGE_MIN_CONDITION) {
       if (zone === "RepairBay") {
         console.log(`🔧 ${tag()}: repairing`);
@@ -503,7 +306,7 @@ async function main() {
       continue;
     }
 
-    // --- Case 4: battery not ready yet ---
+    // --- Case 3: battery not ready yet ---
     if (battery < REDEPLOY_BATTERY_TARGET) {
       if (zone === "ChargingStation") {
         console.log(`🔌 ${tag()}: charging`);
@@ -515,7 +318,7 @@ async function main() {
       continue;
     }
 
-    // --- Case 5: ready enough to re-enter scavenging ---
+    // --- Case 4: ready enough to re-enter scavenging ---
     if (battery >= REDEPLOY_BATTERY_TARGET && condition >= REDEPLOY_CONDITION_TARGET) {
       if (zone !== "ScrapHeaps" || !isScavenging) {
         console.log(`⛏️ ${tag()}: recovered → ScrapHeaps`);

@@ -43,6 +43,21 @@ const FINAL_PHASE_WINDOW_MINUTES = 30;
 const REGISTRATION_BUFFER_MINUTES = 15;
 const MAX_REPAIR_BAY = 5;
 const MAX_JOLT_PER_BOT = 4; // Heat stacks cap practical consecutive Jolts.
+const DEFAULT_JOLT_BATTERY_IDS = [
+  47, 19, 105, 53, 104, 78, 122, 124, 123, 127, 129, 131,
+];
+const JOLT_MIN_STORED_KWH = Number(process.env.JOLT_MIN_STORED_KWH ?? "0");
+const JOLT_REQUIRE_OPERATIONAL = process.env.JOLT_REQUIRE_OPERATIONAL === "1";
+const JOLT_FIXED_BATTERY_IDS = (() => {
+  const raw = (process.env.JOLT_FIXED_BATTERY_IDS || "").trim();
+  if (!raw) return DEFAULT_JOLT_BATTERY_IDS;
+  const seen = new Set<number>();
+  const parsed = raw
+    .split(/[,\s]+/)
+    .map((v) => parseInt(v, 10))
+    .filter((v) => Number.isInteger(v) && v > 0 && !seen.has(v) && seen.add(v));
+  return parsed.length > 0 ? parsed : DEFAULT_JOLT_BATTERY_IDS;
+})();
 
 function predictTerrains(raceTimeUTC: Date): string[] {
   const totalSec = Math.floor(raceTimeUTC.getTime() / 1000);
@@ -315,8 +330,8 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
   try {
     const res = await client.callTool("garage_list_batteries", {});
     const text = res.content[0].text;
+    const preferredSet = new Set<number>(JOLT_FIXED_BATTERY_IDS);
     let sawBatteryArray = false;
-    const usableByStored: Array<{ id: number; stored: number }> = [];
 
     // JSON parser (supports array/object/nested payloads)
     try {
@@ -324,14 +339,34 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
 
       if (Array.isArray(data?.batteries)) {
         sawBatteryArray = true;
+        const byId = new Map<number, { stored: number; isOperational: boolean }>();
         for (const b of data.batteries) {
           const id = Number((b as any)?.id);
           const stored = Number((b as any)?.stored_kwh ?? 0);
           const isOperational = (b as any)?.is_operational === true;
-          if (Number.isInteger(id) && id > 0 && isOperational && stored > 0) {
-            usableByStored.push({ id, stored });
+          if (Number.isInteger(id) && id > 0) {
+            byId.set(id, { stored, isOperational });
           }
         }
+
+        const ranked: Array<{ id: number; stored: number }> = [];
+        for (const id of JOLT_FIXED_BATTERY_IDS) {
+          const info = byId.get(id);
+          if (!info) continue;
+          if (info.stored <= JOLT_MIN_STORED_KWH) continue;
+          if (JOLT_REQUIRE_OPERATIONAL && !info.isOperational) continue;
+          ranked.push({ id, stored: info.stored });
+        }
+
+        if (ranked.length > 0) {
+          ranked.sort((a, b) => b.stored - a.stored);
+          return ranked.map((b) => b.id);
+        }
+
+        const presentPreferred = JOLT_FIXED_BATTERY_IDS.filter((id) =>
+          byId.has(id)
+        );
+        if (presentPreferred.length > 0) return presentPreferred;
       } else {
         const ids = new Set<number>();
         const stack: unknown[] = [data];
@@ -351,19 +386,17 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
               (typeof v === "number" || typeof v === "string")
             ) {
               const n = typeof v === "number" ? v : parseInt(v, 10);
-              if (Number.isInteger(n) && n > 0) ids.add(n);
+              if (Number.isInteger(n) && n > 0 && preferredSet.has(n)) ids.add(n);
             }
             if (v && typeof v === "object") stack.push(v);
           }
         }
-        if (ids.size > 0) return [...ids];
+        if (ids.size > 0) {
+          return JOLT_FIXED_BATTERY_IDS.filter((id) => ids.has(id));
+        }
       }
     } catch {}
 
-    if (usableByStored.length > 0) {
-      usableByStored.sort((a, b) => b.stored - a.stored);
-      return usableByStored.map((b) => b.id);
-    }
     if (sawBatteryArray) {
       return [];
     }
@@ -382,14 +415,17 @@ async function getBatteries(client: PokedRaceMCPClient): Promise<number[]> {
       for (const re of patterns) {
         for (const m of text.matchAll(re)) {
           const n = parseInt(m[1], 10);
-          if (Number.isInteger(n) && n > 0) ids.add(n);
+          if (Number.isInteger(n) && n > 0 && preferredSet.has(n)) ids.add(n);
         }
       }
     }
 
-    return [...ids];
+    if (ids.size > 0) {
+      return JOLT_FIXED_BATTERY_IDS.filter((id) => ids.has(id));
+    }
+    return [...JOLT_FIXED_BATTERY_IDS];
   } catch {
-    return [];
+    return [...JOLT_FIXED_BATTERY_IDS];
   }
 }
 
@@ -515,6 +551,9 @@ async function main() {
   // 5. Battery items for Jolt maintenance
   let batteryIds = await getBatteries(client);
   console.log(`🔋 Parsed usable battery items: ${batteryIds.length}`);
+  if (batteryIds.length > 0) {
+    console.log(`🔋 Jolt order: ${batteryIds.join(", ")}`);
+  }
 
   async function refillBatteryIds(): Promise<number> {
     const latest = await getBatteries(client);

@@ -49,6 +49,8 @@ export default {
 
     if (event.cron === '*/15 * * * *') {
       workflowFiles = ['routine-manager.yml', 'elite-raider-scavenge.yml'];
+    } else if (event.cron === '15 0,6,12,18 * * *') {
+      workflowFiles = ['post-race-jolt.yml'];
     } else if (event.cron === '0 4,10,16,22 * * *') {
       workflowFiles = ['race-prep.yml'];
     }

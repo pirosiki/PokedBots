@@ -5,8 +5,9 @@
  *   - レース登録済みはスキップ
  *   - 未登録はできるだけ ScrapHeaps 継続
  *   - Joltは実行しない（post-race-joltでのみ実行）
- *   - Cond < 25 は RepairBay 優先
- *   - Bat >= 80 かつ Cond >= 40 で ScrapHeaps へ復帰
+ *   - Cond < 15 は RepairBay 優先
+ *   - 無料リペアは Cond >= 70 で打ち止め
+ *   - Bat >= 90 かつ Cond >= 70 で ScrapHeaps へ復帰
  *   - レース登録済み → スキップ
  */
 
@@ -21,10 +22,10 @@ const SERVER_URL =
   "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
 
-const SCAVENGE_MIN_BATTERY = 20;
-const SCAVENGE_MIN_CONDITION = 25;
-const REDEPLOY_BATTERY_TARGET = 80;
-const REDEPLOY_CONDITION_TARGET = 40;
+const SCAVENGE_MIN_BATTERY = 10;
+const SCAVENGE_MIN_CONDITION = 15;
+const REDEPLOY_BATTERY_TARGET = 90;
+const REDEPLOY_CONDITION_TARGET = 70;
 const MAX_REPAIR_BAY = 5;
 const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
 const PREP_WINDOW_MINUTES = 120;
@@ -330,7 +331,7 @@ async function main() {
       continue;
     }
 
-    // Mid condition range (25-39): wait in charging or repair when available
+    // Mid condition range (15-69): recover condition in RepairBay, but stop at >= 70
     if (condition < REDEPLOY_CONDITION_TARGET) {
       if (zone === "RepairBay") {
         console.log(`🔧 ${tag()}: topping condition in RepairBay`);

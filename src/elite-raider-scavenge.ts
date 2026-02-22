@@ -139,6 +139,60 @@ function isInPrepWindow(now: Date = new Date()): boolean {
   return getMinutesUntilNextDailySprint(now) <= PREP_WINDOW_MINUTES;
 }
 
+function parseRegisteredFromPayload(
+  payload: string,
+  candidateSet: Set<number>
+): Set<number> {
+  const tokens = new Set<number>();
+
+  try {
+    const data = JSON.parse(payload);
+    const stack: unknown[] = [data];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (!cur || typeof cur !== "object") continue;
+      if (Array.isArray(cur)) {
+        for (const item of cur) stack.push(item);
+        continue;
+      }
+      const obj = cur as Record<string, unknown>;
+      for (const [k, v] of Object.entries(obj)) {
+        if (
+          /^(token|token_index|tokenIndex|bot_token|botToken)$/i.test(k) &&
+          (typeof v === "number" || typeof v === "string")
+        ) {
+          const n = typeof v === "number" ? v : parseInt(v, 10);
+          if (Number.isInteger(n) && candidateSet.has(n)) tokens.add(n);
+        }
+        if (typeof v === "number" && candidateSet.has(v)) {
+          tokens.add(v);
+        }
+        if (v && typeof v === "object") stack.push(v);
+      }
+    }
+  } catch {}
+
+  for (const m of payload.matchAll(/\b\d+\b/g)) {
+    const n = parseInt(m[0], 10);
+    if (candidateSet.has(n)) tokens.add(n);
+  }
+
+  return tokens;
+}
+
+async function getRegisteredBots(
+  client: PokedRaceMCPClient,
+  candidates: number[]
+): Promise<Set<number>> {
+  try {
+    const result = await client.callTool("racing_get_my_registrations", {});
+    const text = result?.content?.[0]?.text || "";
+    return parseRegisteredFromPayload(text, new Set<number>(candidates));
+  } catch {
+    return new Set<number>();
+  }
+}
+
 async function getOwnedBots(client: PokedRaceMCPClient): Promise<ListedBot[]> {
   const result = await client.callTool("garage_list_my_pokedbots", {});
   const text = result?.content?.[0]?.text || "";
@@ -329,12 +383,21 @@ async function main() {
   const repairBayInit = await getRepairBayTokens(client);
   let repairBayTokens = repairBayInit;
 
-  const targets = owned.filter(
+  const potentialTargets = owned.filter(
     (b) => (b.tier === "Elite" || b.tier === "Raider") && !keepTokens.has(b.token)
   );
+  const registered = await getRegisteredBots(
+    client,
+    potentialTargets.map((b) => b.token)
+  );
+  const targets = potentialTargets.filter((b) => !registered.has(b.token));
 
   console.log(`Owned bots: ${owned.length}`);
-  console.log(`Target Elite/Raider (excluding keep): ${targets.length}`);
+  console.log(`Target Elite/Raider (excluding keep): ${potentialTargets.length}`);
+  console.log(
+    `🏁 Registered filtered out: ${registered.size > 0 ? [...registered].join(", ") : "none"}`
+  );
+  console.log(`Active targets this run: ${targets.length}`);
   console.log(`RepairBay occupancy: ${repairBayTokens.size}/${MAX_REPAIR_BAY}`);
   console.log(`⏱️ Next daily sprint in ${minutesToRace}m (normal window)\n`);
 

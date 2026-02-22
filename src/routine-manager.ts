@@ -259,12 +259,10 @@ async function main() {
     await Promise.all(ALL_TOKENS.map((t) => getBotStatus(client, t)))
   ).filter((s): s is BotStatus => s !== null);
 
-  // 2. Get registered bots only in T-2h prep window
+  // 2. Get registered bots every run (manual registration aware)
   const minutesToRace = getMinutesUntilNextDailySprint();
   const inPrepWindow = isInPrepWindow();
-  const registered = inPrepWindow
-    ? await getRegisteredBotsOnce(client, ALL_TOKENS)
-    : new Set<number>();
+  const registered = await getRegisteredBotsOnce(client, ALL_TOKENS);
   console.log(
     `⏱️ Next daily sprint in ${minutesToRace}m (prep-window=${inPrepWindow ? "ON" : "OFF"})`
   );

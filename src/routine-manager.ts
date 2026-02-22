@@ -31,6 +31,7 @@ const MAX_REPAIR_BAY = 5;
 const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
 const PREP_WINDOW_MINUTES = 120;
 const NON_RACER_PREP_CONDITION_TARGET = 100;
+const REGISTERED_PREP_CONDITION_MIN = 70;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 
 interface BotStatus {
@@ -212,6 +213,40 @@ async function evictOneNonPriorityFromRepairBay(
   return null;
 }
 
+async function getRegisteredRepairDemand(
+  client: PokedRaceMCPClient,
+  registered: Set<number>
+): Promise<{ need: number; waitingNeed: number }> {
+  if (registered.size === 0) return { need: 0, waitingNeed: 0 };
+
+  let need = 0;
+  let waitingNeed = 0;
+  for (const token of registered) {
+    const st = await getBotStatus(client, token);
+    if (!st) continue;
+    if (st.condition < REGISTERED_PREP_CONDITION_MIN) {
+      need++;
+      if (st.zone !== "RepairBay") waitingNeed++;
+    }
+  }
+  return { need, waitingNeed };
+}
+
+async function evictOneNonRegisteredFromRepairBay(
+  client: PokedRaceMCPClient,
+  repairBayTokens: Set<number>,
+  registered: Set<number>
+): Promise<number | null> {
+  for (const token of repairBayTokens) {
+    if (registered.has(token)) continue;
+    console.log(`♻️ Evict non-registered from RepairBay: #${token}`);
+    const ok = await sendTo(client, token, "ChargingStation");
+    await new Promise((r) => setTimeout(r, 300));
+    if (ok) return token;
+  }
+  return null;
+}
+
 async function main() {
   const client = new PokedRaceMCPClient();
   await client.connect(SERVER_URL, API_KEY);
@@ -240,6 +275,14 @@ async function main() {
   // 3. Global RepairBay usage across all owned bots
   let globalRepairBayTokens = await getGlobalRepairBayTokens(client);
   console.log(`🔧 RepairBay occupancy: ${globalRepairBayTokens.size}/${MAX_REPAIR_BAY}\n`);
+  let reservedSlotsForRegistered = 0;
+  if (inPrepWindow && registered.size > 0) {
+    const demand = await getRegisteredRepairDemand(client, registered);
+    reservedSlotsForRegistered = demand.waitingNeed;
+    console.log(
+      `🎯 Registered repair demand: need<${REGISTERED_PREP_CONDITION_MIN}%=${demand.need}, waiting=${demand.waitingNeed}`
+    );
+  }
 
   for (const bot of statuses) {
     let battery = bot.battery;
@@ -270,16 +313,39 @@ async function main() {
       }
 
       if (zone === "RepairBay") {
+        if (reservedSlotsForRegistered > 0) {
+          console.log(
+            `♻️ ${tag()}: reserve slot for registered prep (cond<${REGISTERED_PREP_CONDITION_MIN}%)`
+          );
+          await sendTo(client, bot.token, "ChargingStation");
+          globalRepairBayTokens.delete(bot.token);
+          reservedSlotsForRegistered = Math.max(0, reservedSlotsForRegistered - 1);
+          continue;
+        }
         console.log(`🔧 ${tag()}: non-racer prep repairing to 100%`);
         globalRepairBayTokens.add(bot.token);
         continue;
       }
 
-      if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
+      const freeSlots = Math.max(0, MAX_REPAIR_BAY - globalRepairBayTokens.size);
+      const slotsUsableByNonRacers = freeSlots - reservedSlotsForRegistered;
+      if (slotsUsableByNonRacers > 0) {
         console.log(`🔧 ${tag()}: non-racer prep → RepairBay (target 100%)`);
         const ok = await sendTo(client, bot.token, "RepairBay");
         if (ok) globalRepairBayTokens.add(bot.token);
         continue;
+      }
+
+      if (reservedSlotsForRegistered > 0) {
+        const evicted = await evictOneNonRegisteredFromRepairBay(
+          client,
+          globalRepairBayTokens,
+          registered
+        );
+        if (evicted !== null) {
+          globalRepairBayTokens.delete(evicted);
+          reservedSlotsForRegistered = Math.max(0, reservedSlotsForRegistered - 1);
+        }
       }
 
       if (zone !== "ChargingStation") {

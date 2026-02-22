@@ -32,6 +32,7 @@ const TERRAIN_ORDER: BotEntry["terrain"][] = [
   "WastelandSand",
   "ScrapHeaps",
 ];
+const DAILY_SPRINT_UTC_HOURS = new Set([0, 6, 12, 18]);
 const TERRAINS_PER_EVENT = 2;
 const BOTS_PER_TIER_PER_TERRAIN = 1;
 const MIN_CONDITION_BEFORE_PAID_REPAIR = 70;
@@ -85,6 +86,18 @@ interface EventInfo {
   raceIds: number[];
 }
 
+function isDailySprintEvent(block: string, startTime: Date): boolean {
+  // Prefer explicit label when available in event text.
+  if (/daily\s*sprint|デイリースプリント/i.test(block)) return true;
+
+  // If no explicit label, use known Daily Sprint schedule as strict fallback.
+  return (
+    startTime.getUTCMinutes() === 0 &&
+    startTime.getUTCSeconds() === 0 &&
+    DAILY_SPRINT_UTC_HOURS.has(startTime.getUTCHours())
+  );
+}
+
 async function getUpcomingEvents(
   client: PokedRaceMCPClient
 ): Promise<EventInfo[]> {
@@ -107,6 +120,8 @@ async function getUpcomingEvents(
       const minUntil = (startTime.getTime() - now.getTime()) / 60000;
 
       if (minUntil > EVENT_MIN_MINUTES && minUntil < EVENT_MAX_MINUTES) {
+        if (!isDailySprintEvent(block, startTime)) continue;
+
         const raceIds = raceMatch
           ? raceMatch[1].split(",").map((s: string) => parseInt(s.trim()))
           : [];

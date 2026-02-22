@@ -6,8 +6,9 @@
  *   - 未登録はできるだけ ScrapHeaps 継続
  *   - Joltは実行しない（post-race-joltでのみ実行）
  *   - Cond < 15 は RepairBay 優先
- *   - 無料リペアは Cond >= 70 で打ち止め
+ *   - 通常時の無料リペアは Cond >= 70 で打ち止め
  *   - Bat >= 90 かつ Cond >= 70 で ScrapHeaps へ復帰
+ *   - レース2時間前は、非参加者を無料リペア100%優先モードで回す
  *   - レース登録済み → スキップ
  */
 
@@ -29,6 +30,7 @@ const REDEPLOY_CONDITION_TARGET = 70;
 const MAX_REPAIR_BAY = 5;
 const DAILY_SPRINT_UTC_HOURS = [0, 6, 12, 18];
 const PREP_WINDOW_MINUTES = 120;
+const NON_RACER_PREP_CONDITION_TARGET = 100;
 const PRIORITY_TOKENS = new Set<number>(ALL_TOKENS);
 
 interface BotStatus {
@@ -251,6 +253,42 @@ async function main() {
     // Skip registered bots
     if (registered.has(bot.token)) {
       console.log(`🏁 ${tag()}: registered, skip`);
+      continue;
+    }
+
+    // During T-2h window, non-registered bots prioritize free repair up to 100%.
+    if (inPrepWindow) {
+      if (condition >= NON_RACER_PREP_CONDITION_TARGET) {
+        if (zone === "RepairBay") {
+          console.log(`🔧 ${tag()}: cond 100%, free RepairBay slot`);
+          await sendTo(client, bot.token, "ChargingStation");
+          globalRepairBayTokens.delete(bot.token);
+        } else {
+          console.log(`✅ ${tag()}: non-racer prep done (cond ${condition}%)`);
+        }
+        continue;
+      }
+
+      if (zone === "RepairBay") {
+        console.log(`🔧 ${tag()}: non-racer prep repairing to 100%`);
+        globalRepairBayTokens.add(bot.token);
+        continue;
+      }
+
+      if (globalRepairBayTokens.size < MAX_REPAIR_BAY) {
+        console.log(`🔧 ${tag()}: non-racer prep → RepairBay (target 100%)`);
+        const ok = await sendTo(client, bot.token, "RepairBay");
+        if (ok) globalRepairBayTokens.add(bot.token);
+        continue;
+      }
+
+      if (zone !== "ChargingStation") {
+        console.log(`⏳ ${tag()}: non-racer prep waiting (RepairBay full)`);
+        await sendTo(client, bot.token, "ChargingStation");
+        globalRepairBayTokens.delete(bot.token);
+      } else {
+        console.log(`⏳ ${tag()}: non-racer prep waiting for RepairBay`);
+      }
       continue;
     }
 

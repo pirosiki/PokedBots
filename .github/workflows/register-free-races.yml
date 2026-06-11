@@ -31,4 +31,7 @@ jobs:
         env:
           MCP_SERVER_URL: https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp
           MCP_API_KEY: ${{ secrets.MCP_API_KEY }}
+          MCP_TIMEOUT_MS: "15000"
+          FREE_RACE_MAX_RUNTIME_MS: "900000"
+          FREE_RACE_REGISTER_DELAY_MS: "500"
         run: npm run register-free-races

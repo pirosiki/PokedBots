@@ -7,7 +7,8 @@ const SERVER_URL =
   process.env.MCP_SERVER_URL ||
   "https://p6nop-vyaaa-aaaai-q4djq-cai.icp0.io/mcp";
 const API_KEY = process.env.MCP_API_KEY;
-const REGISTER_DELAY_MS = 700;
+const REGISTER_DELAY_MS = Number(process.env.FREE_RACE_REGISTER_DELAY_MS || "500");
+const MAX_RUNTIME_MS = Number(process.env.FREE_RACE_MAX_RUNTIME_MS || "900000");
 
 type RaceClass = "Scrap" | "Junker" | "Raider" | "Elite" | "SilentKlan";
 
@@ -236,6 +237,7 @@ async function registerForRace(
   eventId: number
 ): Promise<boolean> {
   try {
+    console.log(`   → #${tokenIndex} → Event #${eventId}`);
     const result = await client.callTool("racing_register_for_event", {
       event_id: eventId,
       token_index: tokenIndex,
@@ -254,6 +256,7 @@ async function registerForRace(
 }
 
 async function main() {
+  const startedAt = Date.now();
   const client = new PokedRaceMCPClient();
   await client.connect(SERVER_URL, API_KEY);
 
@@ -291,6 +294,10 @@ async function main() {
   let success = 0;
   let failed = 0;
   for (const { bot, race } of tasks) {
+    if (Date.now() - startedAt > MAX_RUNTIME_MS) {
+      console.log(`\nStopping after ${Math.round(MAX_RUNTIME_MS / 1000)}s runtime limit. Remaining bots will be retried next run.`);
+      break;
+    }
     const ok = await registerForRace(client, bot.tokenIndex, race.eventId);
     if (ok) success += 1;
     else failed += 1;

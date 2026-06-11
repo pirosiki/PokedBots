@@ -3,6 +3,7 @@ export class PokedRaceMCPClient {
   private apiKey: string = "";
   private requestId: number = 0;
   private serverInfo: any = null;
+  private timeoutMs: number = Number(process.env.MCP_TIMEOUT_MS || "60000");
 
   async connect(serverUrl: string, apiKey?: string): Promise<void> {
     console.log(`Connecting to MCP server at ${serverUrl}...`);
@@ -39,6 +40,7 @@ export class PokedRaceMCPClient {
     const response = await fetch(this.serverUrl, {
       method: "POST",
       headers,
+      signal: AbortSignal.timeout(this.timeoutMs),
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: this.requestId,

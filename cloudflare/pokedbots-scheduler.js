@@ -2,6 +2,7 @@
 //
 // Cron設定:
 // - */15 * * * * : 15分ごと → routine + elite/raider scavenge loop
+// - 10 * * * * : 毎時 → free race registration
 // - 30 5,11,17,23 * * * : レース30分前 → pre-race
 // - 45 5,11,17,23 * * * : レース15分後 → post-race
 // - 5-59/15 * * * * : 15分ごと(5分オフセット) → auto-racing
@@ -15,6 +16,7 @@ const GITHUB_REPO = "PokedBots";
 // - Bチーム: 3:00, 15:00 JST (18:00, 6:00 UTC)
 const CRON_WORKFLOWS = {
   "*/15 * * * *": ["routine-manager.yml", "elite-raider-scavenge.yml"],  // 15分ごと
+  "10 * * * *": ["register-free-races.yml"],  // 毎時、無料レース登録
   "30 5,11,17,23 * * *": ["register-daily-sprint.yml"],  // 各レース30分前（登録）
   "45 5,11,17,23 * * *": ["daily-sprint-pre-race.yml"]   // 各レース15分前（メンテナンス）
 };

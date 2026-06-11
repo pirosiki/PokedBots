@@ -5,6 +5,7 @@ compatibility_date = "2024-01-01"
 [triggers]
 crons = [
   "*/15 * * * *",            # routine-manager every 15 min
+  "10 * * * *",              # register free races hourly
   "15 0,6,12,18 * * *",      # post-race-jolt at Daily Sprint +15m
   "0 4,10,16,22 * * *"       # race-prep 2h before Daily Sprint
 ]

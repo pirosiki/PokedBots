@@ -3,9 +3,14 @@ name: Register Free Races
 on:
   workflow_dispatch:
 
+concurrency:
+  group: register-free-races
+  cancel-in-progress: true
+
 jobs:
   register-free-races:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout code

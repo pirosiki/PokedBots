@@ -235,7 +235,7 @@ async function registerForRace(
   client: PokedRaceMCPClient,
   tokenIndex: number,
   eventId: number
-): Promise<boolean> {
+): Promise<"registered" | "failed" | "race-blocked"> {
   try {
     console.log(`   → #${tokenIndex} → Event #${eventId}`);
     const result = await client.callTool("racing_register_for_event", {
@@ -245,13 +245,16 @@ async function registerForRace(
     const text = result.content?.[0]?.text || "";
     if (result.isError || /error|failed/i.test(text)) {
       console.log(`   ✗ #${tokenIndex} → Event #${eventId}: ${text.slice(0, 140)}`);
-      return false;
+      if (/Payment failed|full|max entrants|no slots|registration closed/i.test(text)) {
+        return "race-blocked";
+      }
+      return "failed";
     }
     console.log(`   ✅ #${tokenIndex} → Event #${eventId}`);
-    return true;
+    return "registered";
   } catch (error) {
     console.log(`   ✗ #${tokenIndex} → Event #${eventId}: ${String(error).slice(0, 180)}`);
-    return false;
+    return "failed";
   }
 }
 
@@ -276,32 +279,42 @@ async function main() {
     );
   }
 
-  const plannedCounts = new Map<number, number>();
-  const tasks: { bot: Bot; race: FreeRace }[] = [];
-  for (const bot of bots) {
-    for (const race of freeRaces) {
-      if (!canEnter(bot, race)) continue;
-      if (registered.has(`${bot.tokenIndex}-${race.eventId}`)) continue;
-      const planned = plannedCounts.get(race.eventId) || 0;
-      if (race.registeredCount + planned >= race.maxEntrants) continue;
-      plannedCounts.set(race.eventId, planned + 1);
-      tasks.push({ bot, race });
-      break;
-    }
-  }
+  const registeredCounts = new Map(freeRaces.map((race) => [race.eventId, race.registeredCount]));
+  const blockedRaces = new Set<number>();
+  const candidateBots = bots.filter((bot) =>
+    freeRaces.some((race) => canEnter(bot, race) && !registered.has(`${bot.tokenIndex}-${race.eventId}`))
+  );
 
-  console.log(`\nPlanned registrations: ${tasks.length}`);
+  console.log(`\nCandidate bots: ${candidateBots.length}`);
   let success = 0;
   let failed = 0;
-  for (const { bot, race } of tasks) {
+  for (const bot of candidateBots) {
     if (Date.now() - startedAt > MAX_RUNTIME_MS) {
       console.log(`\nStopping after ${Math.round(MAX_RUNTIME_MS / 1000)}s runtime limit. Remaining bots will be retried next run.`);
       break;
     }
-    const ok = await registerForRace(client, bot.tokenIndex, race.eventId);
-    if (ok) success += 1;
-    else failed += 1;
-    await new Promise((resolve) => setTimeout(resolve, REGISTER_DELAY_MS));
+
+    for (const race of freeRaces) {
+      if (blockedRaces.has(race.eventId)) continue;
+      if (!canEnter(bot, race)) continue;
+      if (registered.has(`${bot.tokenIndex}-${race.eventId}`)) continue;
+      if ((registeredCounts.get(race.eventId) || 0) >= race.maxEntrants) continue;
+
+      const result = await registerForRace(client, bot.tokenIndex, race.eventId);
+      if (result === "registered") {
+        success += 1;
+        registered.add(`${bot.tokenIndex}-${race.eventId}`);
+        registeredCounts.set(race.eventId, (registeredCounts.get(race.eventId) || 0) + 1);
+        await new Promise((resolve) => setTimeout(resolve, REGISTER_DELAY_MS));
+        break;
+      }
+
+      failed += 1;
+      if (result === "race-blocked") {
+        blockedRaces.add(race.eventId);
+      }
+      await new Promise((resolve) => setTimeout(resolve, REGISTER_DELAY_MS));
+    }
   }
 
   console.log("\nSummary");

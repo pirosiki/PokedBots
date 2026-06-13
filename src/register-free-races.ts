@@ -57,7 +57,11 @@ function isFreeEventText(block: string): boolean {
 }
 
 async function getAllBots(client: PokedRaceMCPClient): Promise<Bot[]> {
-  const result = await client.callTool("garage_list_my_pokedbots", {});
+  const result = await client.callTool("garage_list_my_pokedbots", {
+    only_ready: true,
+    only_idle: true,
+    only_not_registered: true,
+  });
   const responseText = result.content?.[0]?.text || "";
   const bots: Bot[] = [];
 
@@ -163,7 +167,10 @@ async function getMyRegistrations(
   client: PokedRaceMCPClient,
   ownedTokens: Set<number>
 ): Promise<Set<string>> {
-  const result = await client.callTool("racing_get_my_registrations", {});
+  const result = await client.callTool("racing_get_my_registrations", {
+    only_actionable: true,
+    exclude_stale: true,
+  });
   const responseText = result.content?.[0]?.text || "";
   const registered = new Set<string>();
 
@@ -235,7 +242,7 @@ async function registerForRace(
   client: PokedRaceMCPClient,
   tokenIndex: number,
   eventId: number
-): Promise<"registered" | "failed" | "race-blocked"> {
+): Promise<"registered" | "failed" | "payment-blocked" | "race-blocked"> {
   try {
     console.log(`   → #${tokenIndex} → Event #${eventId}`);
     const result = await client.callTool("racing_register_for_event", {
@@ -245,7 +252,10 @@ async function registerForRace(
     const text = result.content?.[0]?.text || "";
     if (result.isError || /error|failed/i.test(text)) {
       console.log(`   ✗ #${tokenIndex} → Event #${eventId}: ${text.slice(0, 140)}`);
-      if (/Payment failed|full|max entrants|no slots|registration closed/i.test(text)) {
+      if (/Payment failed/i.test(text)) {
+        return "payment-blocked";
+      }
+      if (/full|max entrants|no slots|registration closed/i.test(text)) {
         return "race-blocked";
       }
       return "failed";
@@ -288,6 +298,7 @@ async function main() {
   console.log(`\nCandidate bots: ${candidateBots.length}`);
   let success = 0;
   let failed = 0;
+  let paymentBlocked = 0;
   for (const bot of candidateBots) {
     if (Date.now() - startedAt > MAX_RUNTIME_MS) {
       console.log(`\nStopping after ${Math.round(MAX_RUNTIME_MS / 1000)}s runtime limit. Remaining bots will be retried next run.`);
@@ -310,6 +321,10 @@ async function main() {
       }
 
       failed += 1;
+      if (result === "payment-blocked") {
+        paymentBlocked += 1;
+        break;
+      }
       if (result === "race-blocked") {
         blockedRaces.add(race.eventId);
       }
@@ -320,7 +335,12 @@ async function main() {
   console.log("\nSummary");
   console.log(`   Registered: ${success}`);
   console.log(`   Failed: ${failed}`);
+  console.log(`   Payment blocked: ${paymentBlocked}`);
   await client.close();
+
+  if (success === 0 && paymentBlocked > 0) {
+    throw new Error("Free race registration is blocked by MCP payment/ICRC-2 approval failure.");
+  }
 }
 
 main().catch((error) => {
